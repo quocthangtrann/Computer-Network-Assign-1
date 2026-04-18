@@ -5,20 +5,20 @@ This repository contains the implementation of a non-blocking HTTP server and a 
 ## Project Features
 
 ### 2.1 Implement non-blocking mechanisms
-* [cite_start]The implementation of non-blocking mechanisms relies on operating system services that allow I/O operations to be halted immediately rather than blocking execution[cite: 187]. 
-* [cite_start]The system handles incoming connections and delegates clients to the HttpAdapter through three non-blocking strategies[cite: 266]. 
-* [cite_start]These supported strategies include multi-threading, callback/event-driven using selectors, or coroutine-based async/await[cite: 266].
+* The implementation of non-blocking mechanisms relies on operating system services that allow I/O operations to be halted immediately rather than blocking execution. 
+* The system handles incoming connections and delegates clients to the HttpAdapter through three non-blocking strategies. 
+* These supported strategies include multi-threading, callback/event-driven using selectors, or coroutine-based async/await.
 
 ### 2.2 Implement the authentication for HTTP server
-* [cite_start]To authenticate a user, the system implements two common approaches including HTTP headers and Cookies[cite: 272]. 
-* [cite_start]The first approach uses the WWW-Authenticate header to request authentication, and the browser responds with an Authorization header carrying login details[cite: 273, 274]. 
-* [cite_start]The second approach uses cookies with the Set-Cookie header when a user logs in successfully[cite: 275].
+* To authenticate a user, the system implements two common approaches including HTTP headers and Cookies. 
+* The first approach uses the WWW-Authenticate header to request authentication, and the browser responds with an Authorization header carrying login details. 
+* The second approach uses cookies with the Set-Cookie header when a user logs in successfully.
 
 ### 2.3 Implement hybrid chat application
-* [cite_start]This task develops a hybrid network application that has a chat system combining both client-server and peer-to-peer (P2P) paradigms[cite: 291]. 
-* [cite_start]The application supports channel management and synchronization across distributed peers[cite: 292]. 
-* [cite_start]The initialization phase uses a centralized server for peer registration and discovery[cite: 345, 346, 348]. 
-* [cite_start]The chatting phase allows peers to exchange messages directly without routing through the centralized server[cite: 349, 351].
+* This task develops a hybrid network application that has a chat system combining both client-server and peer-to-peer (P2P) paradigms. 
+* The application supports channel management and synchronization across distributed peers. 
+* The initialization phase uses a centralized server for peer registration and discovery. 
+* The chatting phase allows peers to exchange messages directly without routing through the centralized server.
 
 ---
 
