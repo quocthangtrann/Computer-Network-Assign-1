@@ -30,14 +30,19 @@ This repository contains the implementation of a non-blocking HTTP server and a 
 ```bash
 cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 9000
+```
 
 **Terminal 2 — User A peer server (port 8000)**
+```bash
 cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8000
+```
 
 **Terminal 3 — User B peer server (port 8001)**
+```bash
 cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8001
+```
 
 ---
 
