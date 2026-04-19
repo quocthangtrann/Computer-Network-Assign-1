@@ -213,10 +213,12 @@ def handle_client(ip, port, conn, addr, routes):
     # Read full HTTP request including headers and body
     request = read_full_request(conn)
 
-    # Extract hostname
+    # Extract hostname - default to empty string to avoid UnboundLocalError
+    hostname = ""
     for line in request.splitlines():
         if line.lower().startswith('host:'):
             hostname = line.split(':', 1)[1].strip()
+            break
 
     print("[Proxy] {} at Host: {}".format(addr, hostname))
 

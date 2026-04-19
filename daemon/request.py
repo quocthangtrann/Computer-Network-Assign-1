@@ -161,38 +161,26 @@ class Request():
         return
 
     def prepare_body(self, data, files, json=None):
+        """Prepares the request body and calculates content-length."""
         self.prepare_content_length(data)
         self.body = data
-
-        #
-        # TODO prepare the request authentication
-        #
-
-        auth_header = self.headers.get('authorization', '') if self.headers else ''
-        self.prepare_auth(auth_header)
         return
 
-
     def prepare_content_length(self, body):
+        """Sets the Content-Length header based on body size."""
         if body:
             self.headers["Content-Length"] = str(len(body.encode('utf-8')))
         else:
             self.headers["Content-Length"] = "0"
-
-        #
-        # TODO prepare the request authentication
-        #
-
-        auth_header = self.headers.get('authorization', '') if self.headers else ''
-        self.prepare_auth(auth_header)
         return
+
 
     def prepare_auth(self, auth = "", url=""):
         #
         # TODO prepare the request authentication
         #
         self.auth = ("", "")
-        if auth and auth.lower().startswith('Basic '):
+        if auth and auth.lower().startswith('basic '):
             encoded_cred = auth[6:].strip()
             try:
                 decoded_cred = base64.b64decode(encoded_cred).decode('utf-8')

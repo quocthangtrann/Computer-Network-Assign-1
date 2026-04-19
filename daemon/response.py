@@ -266,18 +266,15 @@ class Response():
 
         :rtype bytes: Encoded 404 response.
         """
-        body = b"404 Not Found"
-        header = (
-                "HTTP/1.1 404 Not Found\r\n"
-                "Accept-Ranges: bytes\r\n"
-                "Content-Type: text/html\r\n"
-                "Content-Length: 13\r\n"
-                "Cache-Control: max-age=86000\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "404 Not Found"
-            ).format(len(body)).encode('utf-8')
-        return header + body
+        return (
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Type: text/html\r\n"
+            "Content-Length: 13\r\n"
+            "Cache-Control: max-age=86000\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "404 Not Found"
+        ).encode('utf-8')
 
     def build_response(self, request, envelop_content=None):
         """

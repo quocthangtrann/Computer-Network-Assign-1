@@ -269,7 +269,7 @@ class HttpAdapter:
             cookies_str = req.headers.get("cookie", "")
             print(f"[DEBUG Raw cookie string from header: '{ cookies_str }'")
             if cookies_str:
-                for pair in cookies_str.splite(";"):
+                for pair in cookies_str.split(";"):
                     if "=" in pair:
                         key, value = pair.strip().split("=", 1)
                         cookies[key] = value
@@ -392,7 +392,7 @@ class HttpAdapter:
                 username, password = u, p
 
         if username:
-            auth_str = "{}:{}".forma(username,password)
+            auth_str = "{}:{}".format(username, password)
             encoded = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
             headers["Proxy-Authorization"] = "Basic {}".format(encoded)
 
