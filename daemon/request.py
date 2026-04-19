@@ -17,8 +17,10 @@ daemon.request
 This module provides a Request object to manage and persist 
 request settings (cookies, auth, proxies).
 """
-from .dictionary import CaseInsensitiveDict
+
 import base64
+from .dictionary import CaseInsensitiveDict
+from urllib.parse import urlparse
 
 class Request():
     """The fully mutable "class" `Request <Request>` object,
@@ -52,15 +54,25 @@ class Request():
     ]
 
     def __init__(self):
+        #: HTTP verb to send to the server.
         self.method = None
+        #: HTTP URL to send the request to.
         self.url = None
-        self.headers = {}
+        #: dictionary of HTTP headers.
+        self.headers = CaseInsensitiveDict()
+        #: HTTP path
         self.path = None        
+        # The cookies set used to create Cookie header
         self.cookies = None
+        #: request body to send to the server.
         self.body = None
+        # The raw header
         self._raw_headers = None
+        #: The raw body
         self._raw_body = None
+        #: Routes
         self.routes = {}
+        #: Hook point for routed mapped-path
         self.hook = None
 
     def extract_request_line(self, request):
@@ -69,21 +81,24 @@ class Request():
             first_line = lines[0]
             method, path, version = first_line.split()
 
+            if path.startswith('http://') or path.startswith('http://'):
+                path = urlparse(path).path
+
             if path == '/':
                 path = '/index.html'
         except Exception:
             return None, None, None
 
         return method, path, version
-             
+    
     def prepare_headers(self, request):
         """Prepares the given HTTP headers."""
         lines = request.split('\r\n')
-        headers = {}
+        headers = CaseInsensitiveDict()
         for line in lines[1:]:
             if ': ' in line:
                 key, val = line.split(': ', 1)
-                headers[key.lower()] = val
+                headers[key] = val # auto lowercase because of CaseInsensitiveDict
         return headers
 
     def fetch_headers_body(self, request):
@@ -103,123 +118,92 @@ class Request():
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
+        #
+        # @bksysnet Preapring the webapp hook with AsynapRous instance
+        # The default behaviour with HTTP server is empty routed
+        #
+        # TODO manage the webapp hook in this mounting point
+        #
+
+        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
+
+        self.headers = self.prepare_headers(self._raw_headers)
+
         if not routes == {}:
             self.routes = routes
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
             print("[Request] Hook has request {}".format(request))
+            #
+            # self.hook manipulation goes here
+            # ...
+            #
+            if self.hook:
+                pass
 
-        _headers, _body = self.fetch_headers_body(request)
-
-        self._raw_headers = _headers 
-        self._raw_body = _body
+        cookies = self.headers.get('cookie', '') if self.headers else ''
+            #
+            #  TODO: implement the cookie function here
+            #        by parsing the header            
         
-        # handle headers
-        self.headers = self.prepare_headers(_headers)
+        self.cookies = CaseInsensitiveDict()
+        if cookies:
+            parts = cookies.split(';')
+            for part in parts:
+                if '=' in part:
+                    key, val = part.strip().split('=', 1)
+                    self.cookies[key] = val
         
-        # Assign the extracted content to self.body
-        self.prepare_body(_body, None)
-        
-        if self.headers:
-            # get cookie, call parse
-            cookies_str = self.headers.get('cookie', '')
-            self.prepare_cookies(cookies_str)
-            
-            # get auth, call parse
-            auth_str = self.headers.get('authorization', '')
-            self.prepare_auth(auth_str)
-        else:
-            self.headers = {}
-            self.cookies = {}
-            self.auth = None
+        auth_header = self.headers.get('authorization', '') if self.headers else ''
+        self.prepare_auth(auth_header, url = self.path)
+        self.prepare_body(self._raw_body, files=None)
 
         return
 
     def prepare_body(self, data, files, json=None):
+        self.prepare_content_length(data)
         self.body = data
-        self.prepare_content_length(self.body)
+
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+
+        auth_header = self.headers.get('authorization', '') if self.headers else ''
+        self.prepare_auth(auth_header)
         return
 
 
     def prepare_content_length(self, body):
-        if self.headers is None:
-            self.headers = {}
-        content_len = len(body) if body else 0
-        self.headers["Content-Length"] = str(content_len)
+        if body:
+            self.headers["Content-Length"] = str(len(body.encode('utf-8')))
+        else:
+            self.headers["Content-Length"] = "0"
+
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+
+        auth_header = self.headers.get('authorization', '') if self.headers else ''
+        self.prepare_auth(auth_header)
         return
 
-
-    def prepare_auth(self, auth, url=""):
-        """
-        Parses and decodes RFC 2617 Basic Authentication header.
-        
-        Converts "Basic dXNlcjpwYXNz" to {"scheme": "basic", "username": "user", "password": "pass"}
-        
-        :param auth (str): The raw Authorization header value (e.g., "Basic dXNlcjpwYXNz")
-        :param url (str): Optional URL for digest auth
-        :return: dict with decoded auth info or None
-        """
-        if not auth:
-            self.auth = None
-            return
-        
-        auth = auth.strip()
-        parts = auth.split(' ', 1)
-        
-        if len(parts) != 2:
-            self.auth = None
-            return
-        
-        scheme, credentials = parts
-        scheme = scheme.lower()
-        
-        if scheme == 'basic':
+    def prepare_auth(self, auth = "", url=""):
+        #
+        # TODO prepare the request authentication
+        #
+        self.auth = ("", "")
+        if auth and auth.lower().startswith('Basic '):
+            encoded_cred = auth[6:].strip()
             try:
-                # Decode base64 credentials
-                decoded = base64.b64decode(credentials).decode('utf-8')
-                if ':' in decoded:
-                    username, password = decoded.split(':', 1)
-                    self.auth = {
-                        'scheme': 'basic',
-                        'username': username,
-                        'password': password
-                    }
-                else:
-                    # Malformed basic auth (no colon separator)
-                    self.auth = {
-                        'scheme': 'basic',
-                        'username': decoded,
-                        'password': ''
-                    }
-            except Exception as e:
-                print("[Request] Failed to decode Basic Auth: {}".format(e))
-                self.auth = None
-        elif scheme == 'bearer':
-            # Handle Bearer token
-            self.auth = {
-                'scheme': 'bearer',
-                'token': credentials
-            }
-        else:
-            # Store raw for other auth types
-            self.auth = {
-                'scheme': scheme,
-                'credentials': credentials
-            }
+                decoded_cred = base64.b64decode(encoded_cred).decode('utf-8')
+                if ':' in decoded_cred:
+                    self.auth = tuple(decoded_cred.split(':', 1))
+            except Exception:
+                pass
         return
 
-    def prepare_cookies(self, cookies_str):
-        self.cookies = {}
-        if cookies_str:
-            for pair in cookies_str.split(";"):
-                if "=" in pair:
-                    k, v = pair.strip().split("=", 1)
-                    self.cookies[k] = v
+    def prepare_cookies(self, cookies = None):
+        self.headers["Cookie"] = cookies
+        return
+
+

@@ -100,45 +100,125 @@ This repository contains the implementation of a non-blocking HTTP server and a 
 
 ## How to Run & Test
 
+> **Run all commands from the project root directory:**
+> ```bash
+> cd "/Users/leuyentran/Downloads/CO3094-asynaprous copy"
+> ```
+
+---
+
 ### Part 1: Hybrid Chat Application (Task 2.3)
 
 **Terminal 1 — Admin / Tracker server (port 9000)**
 ```bash
-cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 9000
 ```
 
 **Terminal 2 — User A peer server (port 8000)**
 ```bash
-cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8000
 ```
 
 **Terminal 3 — User B peer server (port 8001)**
 ```bash
-cd http_daemon
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8001
 ```
 
+**Demo flow:**
+Open two browser tabs (use incognito for cookie isolation):
+
+- Tab A → http://127.0.0.1:8000 → auto-configures as user **"A"**, trackerPort = 9000
+- Tab B → http://127.0.0.1:8001 → auto-configures as user **"B"**, trackerPort = 9000
+
+1. Both users click **Register** → tracker (port 9000) stores them.
+2. Both click **Discover** → see each other in the Active Peers list.
+3. User A clicks B's name in the list → sets target to B's port.
+4. Type message → **Send Direct** → goes peer-to-peer (A:8000 → B:8001), no tracker involved.
+5. Type message → **Broadcast** → A sends to own server which forwards to all known peers.
+6. Click **Handshake** → confirms peer is online via `/connect-peer`.
+
 ---
 
-Demo flow:
-Open two browser tabs (use incognito for cookie testing):
+### Part 2: Proxy Server (Task 2.1)
 
-Tab A → http://127.0.0.1:8000  
-→ auto-configures as user "A", trackerPort = 9000.  
+The proxy reads virtual host routes from `config/proxy.conf` and forwards requests to backend servers.
 
-Tab B → http://127.0.0.1:8001  
-→ auto-configures as user "B", trackerPort = 9000.  
+**Step 1 — Start the backend app server (the upstream target)**
+```bash
+python start_sampleapp.py --server-ip 0.0.0.0 --server-port 9000
+```
 
-Both users click Register → tracker (port 9000) stores them.  
+**Step 2 — Start the proxy server (port 8080)**
+```bash
+python start_proxy.py --server-ip 0.0.0.0 --server-port 8080
+```
 
-Both click Discover → see each other in the Active Peers list.  
+**Step 3 — Configure `config/proxy.conf`** to map your host to the backend:
+```nginx
+host "127.0.0.1:8080" {
+    proxy_pass http://127.0.0.1:9000;
+}
+```
 
-User A clicks B's name in the list → sets target to B's port.  
+**Step 4 — Test with curl** (the `Host` header must match the config):
+```bash
+# Forward a GET request through the proxy to the backend
+curl -v http://127.0.0.1:8080/get-list -H "Host: 127.0.0.1:8080"
 
-Type message → Send Direct → goes peer-to-peer (A:8000 → B:8001), no tracker involved.  
+# Forward a POST request through the proxy
+curl -v -X POST http://127.0.0.1:8080/submit-info \
+  -H "Host: 127.0.0.1:8080" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "test", "ip": "127.0.0.1", "port": 8000}'
+```
 
-Type message → Broadcast → A sends to own server which forwards to all known peers.  
+> The proxy reads the `Host` header from the request, looks it up in `proxy.conf`, and forwards to the matched `proxy_pass` backend. Round-robin load balancing is supported when multiple `proxy_pass` entries exist.
 
-Click Handshake → confirms peer is online via /connect-peer. 
+---
+
+### Part 3: Authentication (Task 2.2)
+
+The server supports two authentication methods. Start any app server first:
+```bash
+python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8000
+```
+
+#### Method 1 — Cookie-based (Login then access protected route)
+
+**Step 1 — Login to get a session cookie:**
+```bash
+curl -v -X PUT http://127.0.0.1:8000/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin123"}'
+```
+The response will include: `Set-Cookie: sessionid=secure_xyz_789; Path=/; HttpOnly`
+
+**Step 2 — Access the protected `/hello` endpoint with the cookie:**
+```bash
+curl -v -X POST http://127.0.0.1:8000/hello \
+  -H "Cookie: sessionid=secure_xyz_789" \
+  -H "Content-Type: application/json"
+```
+
+**Step 3 — Access `/hello` WITHOUT cookie → expect `401 Unauthorized` + `WWW-Authenticate` header:**
+```bash
+curl -v -X POST http://127.0.0.1:8000/hello
+# Response: HTTP/1.1 401 Unauthorized
+#           WWW-Authenticate: Basic realm="Restricted Area"
+```
+
+#### Method 2 — HTTP Basic Auth (Authorization header)
+
+The `Authorization` header carries base64-encoded `username:password`. The server decodes it in `daemon/request.py` → `prepare_auth()`.
+
+```bash
+# base64("admin:admin123") = "YWRtaW46YWRtaW4xMjM="
+curl -v -X POST http://127.0.0.1:8000/hello \
+  -H "Authorization: Basic YWRtaW46YWRtaW4xMjM="
+```
+
+Or encode on the fly:
+```bash
+curl -v -X POST http://127.0.0.1:8000/hello \
+  -u admin:admin123
+``` 

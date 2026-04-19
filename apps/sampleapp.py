@@ -123,15 +123,16 @@ def echo(headers="guest", body="anonymous"):
 @app.route('/hello', methods=['POST'])
 def hello(headers, body):
     """
-    Handle protected greeting via POST request (Theo đúng yêu cầu Figure 2).
+    Handle protected greeting via POST request.
     Requires valid cookie or authorization header to access.
 
     :param headers (dict): The request headers containing auth details.
     :param body (str): The request body.
     :rtype: tuple (bytes, int)
     """
-    cookie_str = headers.get('cookie', '') if isinstance(headers, dict) else ''
-    auth_str = headers.get('authorization', '') if isinstance(headers, dict) else ''
+    # Use hasattr instead of isinstance(dict) because headers may be CaseInsensitiveDict
+    cookie_str = headers.get('cookie', '') if hasattr(headers, 'get') else ''
+    auth_str = headers.get('authorization', '') if hasattr(headers, 'get') else ''
 
     if 'sessionid=secure_xyz_789' not in cookie_str and not auth_str:
         data = {"error": "Unauthorized. Please login first."}
