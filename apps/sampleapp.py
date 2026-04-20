@@ -195,7 +195,7 @@ def login(headers="guest", body="anonymous"):
     password = data.get("password", "")
 
     # Validate credentials against the user store
-    if USERS.get(username) == password or (username and not password and username in USERS):
+    if username and password and USERS.get(username) == password:
         # Generate a session token and store it
         token = generate_session_token()
         with _lock:
