@@ -449,7 +449,8 @@ def send_peer(headers="guest", body="anonymous"):
     result = {
         "status": "ok",
         "message": "Message queued for {} at {}:{}".format(to_user, target_ip, target_port),
-        "delivered": True,
+        "queued": True,
+        "delivered": False,
     }
     return json.dumps(result).encode("utf-8")
 
@@ -482,7 +483,10 @@ def broadcast_peer(headers="guest", body="anonymous"):
     entry = {"from": sender, "to": "broadcast", "msg": msg_text, "ts": time.time()}
     with _lock:
         messages.append(entry)
-        targets = list(peer_list)  # snapshot
+        
+        # Never connect back to the sender's own peer entry. In callback mode
+        # that would deadlock until timeout because this request is still being handled.
+        targets = [p for p in peer_list if p.get("username") != sender]
 
     delivered = []
     failed = []
@@ -501,10 +505,11 @@ def broadcast_peer(headers="guest", body="anonymous"):
         ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
 
         resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
-        if resp:
-            delivered.append(peer["username"])
-        else:
-            failed.append(peer["username"])
+        with _lock:
+            if resp:
+                delivered.append(peer["username"])
+            else:
+                failed.append(peer["username"])
 
     threads = []
     for peer in targets:
