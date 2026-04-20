@@ -10,17 +10,16 @@
 # while attending the course
 #
 
+# Fixed: Python 2 used `from urlparse import urlparse`; Python 3 moved it to urllib.parse
 from urllib.parse import urlparse, unquote
 
 def get_auth_from_url(url):
-    """Given a url with authentication components, extract them into a tuple of
-    username,password.
 
-    :rtype: (str,str)
-    """
+    # Parse the URL to extract its components
     parsed = urlparse(url)
 
     try:
+        # unquote handles percent-encoded characters in username/password
         auth = (unquote(parsed.username), unquote(parsed.password))
     except (AttributeError, TypeError):
         auth = ("", "")

@@ -14,240 +14,188 @@
 daemon.backend
 ~~~~~~~~~~~~~~~~~
 
-This module provides a backend object to manage and persist backend daemon. 
-It implements a basic backend server using Python's socket and threading libraries.
-It supports handling multiple client connections concurrently and routing requests using a
-custom HTTP adapter.
+This module implements the backend TCP server with three non-blocking I/O
+strategies (Task 2.1):
+
+  1. **Multi-threading** (mode_async = "threading"):
+       One OS thread per connection. Each call to handle_client runs in its
+       own daemon thread, so the main loop can immediately accept the next
+       connection without blocking.
+
+  2. **Event-driven callbacks** (mode_async = "callback"):
+       Uses Python's selectors module to watch the server socket for READ
+       events. When the socket becomes readable a new connection has arrived;
+       handle_client_callback is invoked synchronously. This avoids threads
+       but keeps the server non-blocking from the OS perspective.
+
+  3. **Coroutines / asyncio** (mode_async = "coroutine"):
+       Uses asyncio.start_server() with async/await. The event loop handles
+       all multiplexing; handle_client_coroutine is an async function that
+       awaits reader.read() so it never blocks the loop.
+
+Switch between modes by changing the `mode_async` variable below.
 
 Requirements:
 --------------
-- socket: provide socket networking interface.
-- threading: Enables concurrent client handling via threads.
-- response: response utilities.
-- httpadapter: the class for handling HTTP requests.
-- CaseInsensitiveDict: provides dictionary for managing headers or routes.
-
-
-Notes:
-------
-- The server create daemon threads for client handling.
-- The current implementation error handling is minimal, socket errors are printed to the console.
-- The actual request processing is delegated to the HttpAdapter class.
+- socket:    TCP socket interface.
+- threading: Enables multi-thread mode.
+- asyncio:   Enables coroutine mode.
+- selectors: Enables callback/event-driven mode.
+- inspect:   Detects whether a route handler is a coroutine.
+- response, httpadapter, dictionary: framework internals.
 
 Usage Example:
 --------------
 >>> create_backend("127.0.0.1", 9000, routes={})
-
 """
 
 import socket
 import threading
 import argparse
-
 import asyncio
 import inspect
+import selectors
 
 from .response import *
 from .httpadapter import HttpAdapter
 from .dictionary import CaseInsensitiveDict
 
-import selectors
+# Selector instance for callback (event-driven) mode
 sel = selectors.DefaultSelector()
 
-mode_async = "callback"
-#mode_async = "coroutine"
-mode_async = "threading"
+
+mode_async = "callback"     # epoll/select non-blocking, no threads
+# mode_async = "coroutine"  #asyncio async/await
+# mode_async = "threading"  # one thread per connection
+
+
+# Handler: threading mode
 
 def handle_client(ip, port, conn, addr, routes):
-    """
-    Initializes an HttpAdapter instance and delegates the client handling logic to it.
+# Task 2.1: Handle each client connection using an independent daemon thread
 
-    :param ip (str): IP address of the server.
-    :param port (int): Port number the server is listening on.
-    :param conn (socket.socket): Client connection socket.
-    :param addr (tuple): client address (IP, port).
-    :param routes (dict): Dictionary of route handlers.
-    """
     print("[Backend] Invoke handle_client accepted connection from {}".format(addr))
+    # Create adapter and delegate all handling to it
     daemon = HttpAdapter(ip, port, conn, addr, routes)
-
-    # Handle client
     daemon.handle_client(conn, addr, routes)
 
 
-# Callback for handling new client (itself run in sync mode)
-def handle_client_callback(server, ip, port,conn, addr, routes):
-    """
-    Initialize connection instance and delegates the client handling logic to it.
+# Handler: callback (event-driven / selectors) mode
 
-    :param ip (str): IP address of the server.
-    :param port (int): Port number the server is listening on.
-    :param routes (dict): Dictionary of route handlers.
-    """
+def handle_client_callback(server, ip, port, conn, addr, routes):
+    # Task 2.1: Handle a client connection in event-driven callback mode without threads.
     print("[Backend] Invoke handle_client_callback accepted connection from {}".format(addr))
-
     daemon = HttpAdapter(ip, port, conn, addr, routes)
-
-    # Handle client
     daemon.handle_client(conn, addr, routes)
 
 
-# Coroutine async/await for handling new client
-async def handle_client_coroutine(reader, writer):
-    """
-    Coroutine in async communication to initialize connection instance
-    then delegates the client handling logic to it.
+# Handler: coroutine (asyncio) mode
 
-    :param reader (StreamReader): Stream reader wrapper.
-    :param write (Stream write): Stream write wrapper.
-    """
+async def handle_client_coroutine(reader, writer):
+
     addr = writer.get_extra_info("peername")
     print("[Backend] Invoke handle_client_coroutine accepted connection from {}".format(addr))
 
-    # Handle client in asynchronous mode
-    while True:
-        daemon = HttpAdapter(None, None, None, None, None)
-        await daemon.handle_client_coroutine(reader, writer)
+    # Create adapter; conn/addr are None in asyncio mode (streams are used instead)
+    # TODO: handle for App hook here (async version)
+    daemon = HttpAdapter(None, None, None, None, _coroutine_routes)
+    await daemon.handle_client_coroutine(reader, writer)
 
-def create_async_handler(ip, port, routes):
-    """
-    Creates an async handler closure with IP, port, and routes captured.
-    
-    :param ip (str): IP address of the server.
-    :param port (int): Port number of the server.
-    :param routes (dict): Dictionary of route handlers.
-    :rtype: async function - Handler for asyncio.start_server
-    """
-    async def handle_client_coroutine_with_routes(reader, writer):
-        """
-        Coroutine async/await handler with routes passed in.
-        
-        :param reader (StreamReader): Stream reader wrapper.
-        :param writer (StreamWriter): Stream writer wrapper.
-        """
-        addr = writer.get_extra_info("peername")
-        print("[Backend] Invoke handle_client_coroutine accepted connection from {}".format(addr))
 
-        # Handle client in asynchronous mode
-        while True:
-            # Pass ip, port, and routes to HttpAdapter
-            daemon = HttpAdapter(ip, port, None, addr, routes)
-            await daemon.handle_client_coroutine(reader, writer)
+# Module-level variable to share routes with the coroutine handler
+# (asyncio.start_server does not pass extra args to the callback)
+_coroutine_routes = {}
 
-    return handle_client_coroutine_with_routes
 
 async def async_server(ip="0.0.0.0", port=7000, routes={}):
+
+    global _coroutine_routes
+    _coroutine_routes = routes
+
     print("[Backend] async_server **ASYNC** listening on port {}".format(port))
-    if routes != {}:
+    if routes:
         print("[Backend] route settings")
         for key, value in routes.items():
-            isCoFunc = ""
-            if inspect.iscoroutinefunction(value):
-               isCoFunc += "**ASYNC** "
+            isCoFunc = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
             print("   + ('{}', '{}'): {}{}".format(key[0], key[1], isCoFunc, str(value)))
 
-    # Create handler with routes captured
-    handler = create_async_handler(ip, port, routes)
-    
-    async_server = await asyncio.start_server(handler, ip, port)
-    async with async_server:
-        await async_server.serve_forever()
-    return
+    server = await asyncio.start_server(handle_client_coroutine, ip, port)
+    async with server:
+        await server.serve_forever()
 
+
+# Main entry point
 
 def run_backend(ip, port, routes):
-    """
-    Starts the backend server, binds to the specified IP and port, and listens for incoming
-    connections. Each connection is handled in a separate thread. The backend accepts incoming
-    connections and spawns a thread for each client.
-
-
-    :param ip (str): IP address to bind the server.
-    :param port (int): Port number to listen on.
-    :param routes (dict): Dictionary of route handlers.
-    """
+    # Start the backend server and listen for incoming connections based on mode_async.
     global mode_async
 
     print("[Backend] run_backend with routes={}".format(routes))
-    # Process async stream for registering the service and terminate
+
+    # Coroutine mode
     if mode_async == "coroutine":
+        asyncio.run(async_server(ip, port, routes))
+        return
 
-       asyncio.run(async_server(ip, port, routes))
-       return
-
-    # Process socket object
+    # Socket-based modes (threading or callback)
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Allow reuse of recently freed ports (avoids "Address already in use")
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     try:
         server.bind((ip, port))
         server.listen(50)
 
         print("[Backend] Listening on port {}".format(port))
-        if routes != {}:
+        if routes:
             print("[Backend] route settings")
             for key, value in routes.items():
-               isCoFunc = ""
-               if inspect.iscoroutinefunction(value):
-                  isCoFunc += "**ASYNC** "
-               print("   + ('{}', '{}'): {}{}".format(key[0], key[1], isCoFunc, str(value)))
+                isCoFunc = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
+                print("   + ('{}', '{}'): {}{}".format(key[0], key[1], isCoFunc, str(value)))
 
+        # Callback (event-driven) mode
         if mode_async == "callback":
+            # Register the server socket so sel.select() fires on new connections
+            sel.register(server, selectors.EVENT_READ,
+                         (handle_client_callback, ip, port, routes))
             server.setblocking(False)
-            # Register server socket with selector to listen for new connection events
-            sel.register(server, selectors.EVENT_READ, data=("accept", ip, port, routes))
 
-        while True:
-            if mode_async == "callback":
-                # Wait for events instead of blocking at accept()
+            while True:
+                # TODO: implement the step of the client incoming connection
+                #       using non-blocking callback (event-driven) communication
+                # sel.select() blocks until at least one socket is ready
                 events = sel.select(timeout=None)
                 for key, mask in events:
-                    if key.data[0] == "accept":
-                        # Event: New client connection
-                        _, ip_pass, port_pass, routes_pass = key.data
-                        conn, addr = key.fileobj.accept()
-                        conn.setblocking(False)
-                        # Register new client socket with selector to wait for data
-                        sel.register(conn, selectors.EVENT_READ, data=("read", ip_pass, port_pass, addr, routes_pass))
-                    
-                    elif key.data[0] == "read":
-                        # Event: Client sends data
-                        _, ip_pass, port_pass, addr_pass, routes_pass = key.data
-                        conn = key.fileobj
-                        # Unregister to avoid infinite loop before processing
-                        sel.unregister(conn)
-                        # Handle client
-                        conn.setblocking(True)
-                        handle_client_callback(server, ip_pass, port_pass, conn, addr_pass, routes_pass)
-                        # Re-register connection for persistent HTTP keep-alive support
-                        # Check if connection is still open before re-registering
-                        try:
-                            conn.setblocking(False)
-                            # Re-register the connection for potential next request
-                            sel.register(conn, selectors.EVENT_READ, data=("read", ip_pass, port_pass, addr_pass, routes_pass))
-                        except (OSError, ValueError) as e:
-                            # Connection closed by client or peer
-                            print("[Backend] Connection closed by peer: {}".format(e))
-            else:
-                # Baseline multi-thread implementation
-                conn, addr = server.accept() #block until a client connects
+                    callback, _ip, _port, _routes = key.data
+                    # Accept the new connection
+                    conn, addr = key.fileobj.accept()
+                    # The server socket is non-blocking, so conn inherits it.
+                    # We set it back to blocking so HttpAdapter can read easily.
+                    conn.setblocking(True)
+                    callback(key.fileobj, _ip, _port, conn, addr, _routes)
+
+        # Threading (multi-thread) mode
+        else:
+            while True:
+                # Block here until a client connects
+                conn, addr = server.accept()
+
+                # TODO: implement the step of the client incoming connection
+                #       using multi-thread programming with the provided handle_client routine
+                # Spawn a daemon thread so the main loop immediately resumes
                 client_thread = threading.Thread(
-                    target=handle_client, 
+                    target=handle_client,
                     args=(ip, port, conn, addr, routes)
                 )
-                client_thread.daemon = True
+                client_thread.daemon = True   # thread dies with main process
                 client_thread.start()
 
-
     except socket.error as e:
-      print("Socket error: {}".format(e))
+        print("[Backend] Socket error: {}".format(e))
+    finally:
+        server.close()
+
 
 def create_backend(ip, port, routes={}):
-    """
-    Entry point for creating and running the backend server.
-
-    :param ip (str): IP address to bind the server.
-    :param port (int): Port number to listen on.
-    :param routes (dict, optional): Dictionary of route handlers. Defaults to empty dict.
-    """
-
+        
     run_backend(ip, port, routes)
