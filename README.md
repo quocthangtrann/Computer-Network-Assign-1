@@ -125,7 +125,7 @@ python3 start_sampleapp.py --server-ip 0.0.0.0 --server-port 2027
 1. Open two browser tabs (you can use Incognito to isolate sessions):
    - Tab A: [http://127.0.0.1:2026](http://127.0.0.1:2026) (auto-configured as `alice`)
    - Tab B: [http://127.0.0.1:2027](http://127.0.0.1:2027) (auto-configured as `bob`)
-2. **Login & Register**: Click **🔐 Login** on the right sidebar and enter credentials (e.g., `admin:admin123` or `alice:password1`). Upon successful login, you will automatically be registered as a peer.
+2. **Login & Register**: Click **Login** on the right sidebar and enter credentials (e.g., `admin:admin123` or `alice:password1`). Upon successful login, you will automatically be registered as a peer.
 3. **Discover**: Click **Discover** on the right sidebar to find other online peers.
 4. **Direct P2P Message**: In the Active Peers list, click a peer's name to target them. Type a message and click **Send Direct**.
 5. **Broadcast Message**: Type a message and click **Broadcast** to send to all discovered peers.
