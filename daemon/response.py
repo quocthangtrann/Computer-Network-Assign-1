@@ -309,7 +309,7 @@ class Response():
             "404 Not Found"
         ).encode('utf-8')
 
-    def build_unauthorized(self, realm="AsynapRous"):
+    def build_unauthorized(self, realm="AsynapRous", extra_headers=None):
         #Build a 401 Unauthorized response with a WWW-Authenticate header.
 
 

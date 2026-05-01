@@ -16,10 +16,9 @@
         <aside class="sidebar-left">
             <div class="sidebar-header">
                 <div class="app-logo">
-                    <div class="app-logo-icon">💬</div>
-                    <h1>HybridChat</h1>
+                    <h1>Hybrid Chat</h1>
                 </div>
-                <div class="app-logo-subtitle">P2P Messaging System</div>
+                <div class="app-logo-subtitle">P2P Message System</div>
             </div>
 
             <div class="sidebar-section">
@@ -27,8 +26,19 @@
             </div>
             <ul class="channel-list" id="directMsgList">
                 <li class="channel-item active" data-view="direct" onclick="switchView('direct')">
-                    <span class="ch-hash">📮</span>
+                    <svg class="menu-icon-heart" width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-light)">
+                        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                    </svg>
                     <span>All Messages</span>
+                </li>
+            </ul>
+
+            <ul class="channel-list" id="channelList">
+                <li class="channel-item" data-channel="general" onclick="switchChannel('general')">
+                    <svg class="menu-icon-heart" width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-light)">
+                        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                    </svg>
+                    <span>general</span>
                 </li>
             </ul>
 
@@ -61,7 +71,7 @@
         <main class="chat-main">
             <div class="chat-header">
                 <div class="chat-header-info">
-                    <h2 id="chatTitle">📮 All Messages</h2>
+                    <h2 id="chatTitle">All Messages</h2>
                     <span id="chatSubtitle">Direct &amp; Broadcast messages</span>
                 </div>
                 <div id="notificationBadge" class="notification-badge">0 new</div>
@@ -82,10 +92,18 @@
                         ➤ Send Direct
                     </button>
                     <button class="btn btn-accent" onclick="sendBroadcastMsg()" id="broadcastBtn">
-                        📡 Broadcast
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+                            <circle cx="12" cy="12" r="2"></circle>
+                            <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
+                        </svg>
+                        Broadcast
                     </button>
                     <button class="btn btn-secondary" onclick="connectPeer()" id="connectBtn">
-                        🤝 Handshake
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+                            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                        </svg>
+                        Handshake
                     </button>
                 </div>
             </div>
@@ -148,10 +166,22 @@
             <div class="config-section">
                 <h4>Authentication (Task 2.2)</h4>
                 <div style="display:flex;gap:6px;">
-                    <button class="btn btn-primary btn-sm" style="flex:1" onclick="openLoginModal()" id="loginBtn">🔐
-                        Login</button>
-                    <button class="btn btn-secondary btn-sm" style="flex:1" onclick="logoutUser()"
-                        id="logoutBtn">Logout</button>
+                    <button class="btn btn-primary btn-sm" style="flex:1" onclick="openLoginModal()" id="loginBtn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+                            <polyline points="10 17 15 12 10 7"></polyline>
+                            <line x1="15" y1="12" x2="3" y2="12"></line>
+                        </svg>
+                        Login
+                    </button>
+                    <button class="btn btn-secondary btn-sm" style="flex:1" onclick="logoutUser()" id="logoutBtn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 17 21 12 16 7"></polyline>
+                            <line x1="21" y1="12" x2="9" y2="12"></line>
+                        </svg>
+                        Logout
+                    </button>
                 </div>
                 <div id="authStatus" style="font-size:11px;color:var(--text-muted);margin-top:6px;">Not logged in</div>
             </div>
@@ -193,7 +223,7 @@
     <!-- LOGIN MODAL (Task 2.2/2.3 — Cookie Authentication) -->
     <div class="modal-overlay" id="loginModal">
         <div class="modal">
-            <h3>🔐 Login</h3>
+            <h3>Login</h3>
             <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">Authenticate with the server (Task
                 2.2 — Cookie Auth)</p>
             <div class="config-group">
@@ -289,7 +319,7 @@
             const target = document.querySelector(`[data-view="${view}"]`);
             if (target) target.classList.add('active');
 
-            document.getElementById('chatTitle').textContent = '📮 All Messages';
+            document.getElementById('chatTitle').textContent = 'All Messages';
             document.getElementById('chatSubtitle').textContent = 'Direct & Broadcast messages';
             document.getElementById('sendBtn').textContent = '➤ Send Direct';
             document.getElementById('broadcastBtn').style.display = '';
@@ -345,7 +375,7 @@
                 const res = await fetch(`${getTrackerUrl()}/submit-info`, { method: "POST", headers, body: payload });
                 const data = await res.json();
                 if (data.status === 'ok') {
-                    showToast(`✅ Registered as ${myName}`);
+                    showToast(`Registered as ${myName}`);
                     setStatus('Registered as ' + myName, 'success');
                     document.getElementById('userStatusSidebar').textContent = 'Online';
                     ok = true;
@@ -413,7 +443,7 @@
                     if (!isSelf) {
                         document.getElementById('targetIp').value = info.ip;
                         document.getElementById('targetPort').value = info.port;
-                        showToast(`🎯 Target set to ${name} (${info.ip}:${info.port})`);
+                        showToast(`Target set to ${name} (${info.ip}:${info.port})`);
                     }
                 };
                 item.innerHTML = `
@@ -447,7 +477,7 @@
                 });
                 const data = await res.json();
                 if (data.peer_alive) {
-                    showToast('✅ Peer is online and ready!');
+                    showToast('Peer is online and ready!');
                     addSystemMessage(`Handshake successful — peer at ${targetIp}:${targetPort} is online.`);
                     // Merge their peer list into our known peers
                     if (data.remote_peers && data.remote_peers.length > 0) {
@@ -457,7 +487,7 @@
                         renderPeerList();
                     }
                 } else {
-                    showToast('⚠️ Peer not responding');
+                    showToast('Peer not responding');
                     addSystemMessage(`Handshake failed — ${targetIp}:${targetPort} is offline.`);
                 }
             } catch (e) {
@@ -532,7 +562,7 @@
                         document.getElementById('messageInput').value = '';
                         // Trigger instant poll so sender sees their own channel msg right away
                         await fetchChannelMessages(currentView);
-                        showToast('📣 Sent to #' + currentView);
+                        showToast('Sent to #' + currentView);
                     }
                 } catch (e) {
                     showToast('Error: ' + e.message);
@@ -558,7 +588,7 @@
                 if (res.ok) {
                     const data = await res.json();
                     document.getElementById('messageInput').value = '';
-                    showToast(`📡 Broadcast sent! Delivered: ${data.delivered?.length || 0} peer(s)`);
+                    showToast(`Broadcast sent! Delivered: ${data.delivered?.length || 0} peer(s)`);
                 }
             } catch (e) {
                 showToast('Error: ' + e.message);
@@ -581,6 +611,10 @@
             const senderName = msgObj.from || 'Unknown';
             const color = getPeerColor(senderName.replace(' (You)', ''));
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            if (senderName.includes('(You)')) {
+                group.classList.add('me');
+            }
 
             group.innerHTML = `
         <div class="msg-sender" style="color:${color}">
@@ -780,7 +814,7 @@
                 if (res.ok && data.status === 'ok') {
                     closeLoginModal();
                     document.getElementById('authStatus').textContent = 'Logged in as ' + (data.username || username);
-                    document.getElementById('loginBtn').textContent = '✅ Logged In';
+                    document.getElementById('loginBtn').textContent = 'Logged In';
                     document.getElementById('myName').value = data.username || username;
                     updateUserDisplay();
                     showToast('Welcome, ' + (data.username || username) + '!');
@@ -800,7 +834,7 @@
 
         function logoutUser() {
             document.getElementById('authStatus').textContent = 'Not logged in';
-            document.getElementById('loginBtn').textContent = '🔐 Login';
+            document.getElementById('loginBtn').textContent = 'Login';
             showToast('Logged out.');
         }
 
