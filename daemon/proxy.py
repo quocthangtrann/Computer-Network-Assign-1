@@ -51,6 +51,79 @@ PROXY_PASS = {
 
 round_robin_counter = {}
 
+def receive_http_request(conn):
+    raw = b""
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        raw += chunk
+
+        if b"\r\n\r\n" not in raw:
+            continue
+
+        header_end = raw.find(b"\r\n\r\n")
+        header_bytes = raw[:header_end]
+        body_received = len(raw) - header_end - 4
+        content_length = 0
+
+        for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                try:
+                    content_length = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    content_length = 0
+                break
+
+        if body_received >= content_length:
+            break
+
+    return raw.decode('utf-8', errors='replace')
+
+def extract_request_path(request):
+    first_line = request.splitlines()[0] if request.splitlines() else ""
+    parts = first_line.split()
+    return parts[1] if len(parts) >= 2 else "/"
+
+def rewrite_request_path(request, new_path):
+    lines = request.split("\r\n")
+    if not lines:
+        return request
+
+    parts = lines[0].split()
+    if len(parts) >= 3:
+        parts[1] = new_path
+        lines[0] = " ".join(parts)
+    return "\r\n".join(lines)
+
+def strip_prefix(path, prefix):
+    if not path.startswith(prefix):
+        return path
+
+    stripped = path[len(prefix):]
+    if not stripped:
+        return "/"
+    if not stripped.startswith("/"):
+        return "/" + stripped
+    return stripped
+
+def resolve_path_route(path, routes):
+    path_routes = routes.get("__path_routes__", [])
+    matches = [route for route in path_routes if path.startswith(route["prefix"])]
+    if not matches:
+        return None
+    return max(matches, key=lambda route: len(route["prefix"]))
+
+def parse_target(target):
+    host, port = target.split(":", 1)
+    return host, int(port)
+
+def resolve_default_route(routes):
+    target = routes.get("__default__")
+    if target:
+        return parse_target(target), None
+    return None, None
+
 
 def forward_request(host, port, request):
     # Forward a raw HTTP request to a backend server and return the response.
@@ -133,8 +206,7 @@ def resolve_routing_policy(hostname, routes):
 def handle_client(ip, port, conn, addr, routes):
     # Handle a single proxied client connection.
     try:
-        # Read the full request (use a generous buffer — headers can be large)
-        request = conn.recv(4096).decode('utf-8', errors='replace')
+        request = receive_http_request(conn)
     except Exception as e:
         print("[Proxy] recv error: {}".format(e))
         conn.close()
@@ -155,13 +227,32 @@ def handle_client(ip, port, conn, addr, routes):
 
     print("[Proxy] {} at Host: {}".format(addr, hostname))
 
-    # Resolve backend destination
-    resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
-    try:
-        resolved_port = int(resolved_port)
-    except ValueError:
-        print("[Proxy] Invalid port value '{}'".format(resolved_port))
-        resolved_port = 9000
+    request_path = extract_request_path(request)
+    path_route = resolve_path_route(request_path, routes)
+
+    if path_route:
+        resolved_host, resolved_port = parse_target(path_route["target"])
+        if path_route.get("strip_prefix"):
+            rewritten_path = strip_prefix(request_path, path_route["prefix"])
+            request = rewrite_request_path(request, rewritten_path)
+        print("[Proxy] Path {} -> {}:{} as {}".format(
+            request_path, resolved_host, resolved_port, extract_request_path(request)
+        ))
+    else:
+        default_result, _ = resolve_default_route(routes)
+        if default_result:
+            resolved_host, resolved_port = default_result
+            print("[Proxy] Default route {} -> {}:{}".format(
+                request_path, resolved_host, resolved_port
+            ))
+        else:
+            # Resolve backend destination by Host header for legacy virtual host config.
+            resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
+            try:
+                resolved_port = int(resolved_port)
+            except ValueError:
+                print("[Proxy] Invalid port value '{}'".format(resolved_port))
+                resolved_port = 9000
 
     if resolved_host:
         print("[Proxy] Forwarding {} → {}:{}".format(hostname, resolved_host, resolved_port))

@@ -266,6 +266,7 @@
         let knownPeers = {};
         let joinedChannels = ['general'];
         let isAuthenticated = false;
+        let trackerApiBase = "";
 
         const PEER_COLORS = [
             '#6c5ce7', '#00cec9', '#fdcb6e', '#e17055',
@@ -292,6 +293,7 @@
             return `http://${document.getElementById('targetIp').value}:${document.getElementById('targetPort').value}`;
         }
         function getTrackerUrl() {
+            if (trackerApiBase) return trackerApiBase;
             return `http://${document.getElementById('trackerIp').value}:${document.getElementById('trackerPort').value}`;
         }
 
@@ -913,24 +915,28 @@
 
         function autoConfigure() {
             const params = new URLSearchParams(window.location.search);
-            const port = window.location.port || "2026";
+            const port = params.get('peerPort') || params.get('myPort') || window.location.port || "8000";
             const host = window.location.hostname || "127.0.0.1";
             const trackerIp = params.get('trackerIp') || params.get('tracker') || host;
             const myIp = params.get('peerIp') || params.get('myIp') || host;
             const targetIp = params.get('targetIp') || trackerIp;
+            const apiBase = params.get('apiBase') || params.get('trackerBase');
+            const configuredUsername = params.get('username') || params.get('user');
+            trackerApiBase = apiBase ? new URL(apiBase, window.location.origin).href.replace(/\/$/, '') : "";
 
             document.getElementById('myIp').value = myIp;
             document.getElementById('myPort').value = port;
-            document.getElementById('trackerPort').value = "2026";  // shared tracker = port 2026
+            document.getElementById('trackerPort').value = params.get('trackerPort') || "3001";
             document.getElementById('trackerIp').value = trackerIp;
             document.getElementById('targetIp').value = targetIp;
+            document.getElementById('targetPort').value = params.get('targetPort') || "8000";
 
-            if (port === "2026") {
+            if (configuredUsername) {
+                document.getElementById('loginUsername').value = configuredUsername;
+            } else if (port === "2026") {
                 document.getElementById('loginUsername').value = "alice";
-                document.getElementById('targetPort').value = "2027";
             } else if (port === "2027") {
                 document.getElementById('loginUsername').value = "bob";
-                document.getElementById('targetPort').value = "2026";
             } else {
                 document.getElementById('loginUsername').value = "Peer_" + port;
             }

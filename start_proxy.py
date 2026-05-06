@@ -58,12 +58,34 @@ def parse_virtual_hosts(config_file):
     with open(config_file, 'r') as f:
         config_text = f.read()
 
-    # Match each host block
+    # Path routes are checked before legacy Host routes. A path route can strip
+    # its prefix before forwarding, so /api/login becomes /login at the backend.
+    routes = {"__path_routes__": []}
+
+    default_match = re.search(r'default\s*\{(.*?)\}', config_text, re.DOTALL)
+    if default_match:
+        proxy_pass = re.search(r'proxy_pass\s+http://([^\s;]+);', default_match.group(1))
+        if proxy_pass:
+            routes["__default__"] = proxy_pass.group(1)
+
+    path_blocks = re.findall(r'path\s+"([^"]+)"\s*\{(.*?)\}', config_text, re.DOTALL)
+    for prefix, block in path_blocks:
+        proxy_pass = re.search(r'proxy_pass\s+http://([^\s;]+);', block)
+        if not proxy_pass:
+            continue
+        strip_match = re.search(r'strip_prefix\s+(true|false)', block, re.IGNORECASE)
+        strip_prefix = True if not strip_match else strip_match.group(1).lower() == "true"
+        routes["__path_routes__"].append({
+            "prefix": prefix,
+            "target": proxy_pass.group(1),
+            "strip_prefix": strip_prefix,
+        })
+
+    # Match each legacy host block
     host_blocks = re.findall(r'host\s+"([^"]+)"\s*\{(.*?)\}', config_text, re.DOTALL)
 
     dist_policy_map = ""
 
-    routes = {}
     for host, block in host_blocks:
         proxy_map = {}
 

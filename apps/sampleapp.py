@@ -737,7 +737,52 @@ def receive_message(headers="guest", body="anonymous"):
 
 # Entry point
 
-def create_sampleapp(ip, port):
+TRACKER_ROUTE_PATHS = {
+    "/login",
+    "/hello",
+    "/echo",
+    "/submit-info",
+    "/get-list",
+}
 
+PEER_ROUTE_PATHS = {
+    "/login",
+    "/hello",
+    "/echo",
+    "/add-list",
+    "/connect-peer",
+    "/send-peer",
+    "/broadcast-peer",
+    "/get-messages",
+    "/get-channels",
+    "/get-channel-messages",
+    "/broadcast-channel",
+    "/leave-channel",
+    "/receive-message",
+}
+
+def configure_routes_for_role(role):
+    role = (role or "").lower()
+
+    if role == "tracker":
+        allowed_paths = TRACKER_ROUTE_PATHS
+    elif role == "peer":
+        allowed_paths = PEER_ROUTE_PATHS
+    else:
+        raise ValueError("Unknown sample app role: {}".format(role))
+
+    app.routes = {
+        key: handler
+        for key, handler in app.routes.items()
+        if key[1] in allowed_paths
+    }
+    print("[SampleApp] Running in {} role with routes: {}".format(
+        role,
+        sorted("{} {}".format(method, path) for method, path in app.routes.keys())
+    ))
+
+def create_sampleapp(ip, port, role):
+
+    configure_routes_for_role(role)
     app.prepare_address(ip, port)
     app.run()
