@@ -209,12 +209,6 @@ class HttpAdapter:
                 print("[HttpAdapter] Handler error: {}".format(e))
                 result = json.dumps({"error": str(e)}).encode("utf-8")
 
-            # Normalise result to bytes
-            if isinstance(result, str):
-                result = result.encode("utf-8")
-            elif not isinstance(result, bytes):
-                result = json.dumps(result).encode("utf-8")
-
             # Inspect the JSON payload for sentinel keys injected by handlers:
             #   __status__    → custom HTTP status code (e.g. 401)
             #   __set_cookie__ → value for Set-Cookie header (session auth)

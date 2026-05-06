@@ -261,7 +261,6 @@
         // ============================================================
         let currentView = 'direct';
         let lastMsgCount = 0;
-        let lastChannelMsgCounts = {};   // { channelName: count }
         // knownPeers: { username: {ip, port} }  (converted from server's list format)
         let knownPeers = {};
         let joinedChannels = ['general'];
@@ -454,9 +453,16 @@
                 item.className = 'peer-item';
                 item.onclick = () => {
                     if (!isSelf) {
+                        document.getElementById('targetName').value = name;
                         document.getElementById('targetIp').value = info.ip;
                         document.getElementById('targetPort').value = info.port;
-                        showToast(`Target set to ${name} (${info.ip}:${info.port})`);
+                        showToast(`Target set to ${name}`);
+                        
+                        // Clear chat box and reset counter to force a fresh filtered view
+                        document.getElementById('chatMessages').innerHTML = 
+                            `<div class="msg-system">Chatting with ${name}</div>`;
+                        lastMsgCount = 0; 
+                        fetchMessages();
                     }
                 };
                 item.innerHTML = `
@@ -529,24 +535,28 @@
             const myName = document.getElementById('myName').value;
 
             if (currentView === 'direct') {
-                // Determine the target peer name from dropdown / peer list
                 const targetPort = document.getElementById('targetPort').value;
-                let toName = '';
-                for (const [name, info] of Object.entries(knownPeers)) {
-                    if (String(info.port) === String(targetPort)) { toName = name; break; }
+                const targetIp = document.getElementById('targetIp').value;
+
+                // Try to find the name from our known peers if targetName is not set
+                if (!targetName) {
+                    for (const [name, info] of Object.entries(knownPeers)) {
+                        if (info.ip === targetIp && String(info.port) === String(targetPort)) {
+                            targetName = name;
+                            break;
+                        }
+                    }
                 }
-                if (!toName) toName = 'peer';   // fallback
 
                 try {
                     const res = await fetch(`${getMyBaseUrl()}/send-peer`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        // 'msg' matches our backend API (not 'message')
                         body: JSON.stringify({
                             from: myName,
-                            to: toName,
+                            to: targetName || 'peer',
                             msg: msgText,
-                            ip: document.getElementById('targetIp').value,
+                            ip: targetIp,
                             port: targetPort
                         }),
                         credentials: "include"
@@ -687,15 +697,14 @@
                 if (msgs.length > lastMsgCount) {
                     const myName = document.getElementById('myName').value;
                     let newFromOthers = 0;
+
                     for (let i = lastMsgCount; i < msgs.length; i++) {
                         const m = msgs[i];
                         const type = (m.to === 'broadcast') ? 'broadcast' : 'direct';
-                        // Mark own messages with "(You)" so they're visually distinct
                         const displayFrom = (m.from === myName) ? m.from + ' (You)' : m.from;
                         addMessage({ type, from: displayFrom, msg: m.msg });
                         if (m.from !== myName) newFromOthers++;
                     }
-                    // Only show notification badge for messages from others
                     if (newFromOthers > 0) showNotification(newFromOthers);
                     lastMsgCount = msgs.length;
                 }

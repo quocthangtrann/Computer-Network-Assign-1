@@ -97,37 +97,32 @@ def resolve_routing_policy(hostname, routes):
     proxy_map, policy = entry
     print("[Proxy] proxy_map={} policy={}".format(proxy_map, policy))
 
-    proxy_host = '127.0.0.1'
-    proxy_port = '9000'
-
+    # Final resolution of backend
+    selected_backend = ""
+    
     if isinstance(proxy_map, list):
-        if len(proxy_map) == 0:
-            # TODO: implement error handling for non-mapped host.
-            #       The policy is designed by team, but it can be a basic
-            #       default host in your self-defined system.
-            print("[Proxy] Empty resolved routing of hostname {}".format(hostname))
-            # Use dummy host; forward_request will return 502
-            proxy_host = '127.0.0.1'
-            proxy_port = '9000'
-        elif len(proxy_map) == 1:
-            # Single backend — use it directly
-            proxy_host, proxy_port = proxy_map[0].split(":", 1)
-        else:
-            # Multiple backends — round-robin (extension point)
-            # Implement actual Round-Robin Load Balancing
+        if not proxy_map:
+            print("[Proxy] Error: Empty backend list for {}".format(hostname))
+            return '127.0.0.1', 9000
+            
+        if policy == 'round-robin' and len(proxy_map) > 1:
             if hostname not in round_robin_counter:
                 round_robin_counter[hostname] = 0
-            
             index = round_robin_counter[hostname] % len(proxy_map)
-            proxy_host, proxy_port = proxy_map[index].split(":", 1)
-            
+            selected_backend = proxy_map[index]
             round_robin_counter[hostname] += 1
+        else:
+            selected_backend = proxy_map[0]
     else:
-        # Single string "host:port"
-        print("[Proxy] Singular route for hostname {} to {}".format(hostname, proxy_map))
-        proxy_host, proxy_port = proxy_map.split(":", 1)
+        # proxy_map is already a string "host:port"
+        selected_backend = proxy_map
 
-    return proxy_host, proxy_port
+    try:
+        host, port = selected_backend.split(":", 1)
+        return host, int(port)
+    except Exception as e:
+        print("[Proxy] Routing error for {}: {}".format(selected_backend, e))
+        return '127.0.0.1', 9000
 
 
 def handle_client(ip, port, conn, addr, routes):

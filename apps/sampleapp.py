@@ -133,13 +133,35 @@ def validate_basic_auth(headers):
     except Exception:
         pass
     return None
-
 def require_auth(headers):
-
     user = validate_session(headers)
     if user:
         return user
     return validate_basic_auth(headers)
+
+def get_all_local_ips():
+    """Detect all local IP addresses safely."""
+    ips = {'127.0.0.1', 'localhost', '0.0.0.0', '172.20.10.2'}
+    try:
+        # Get host IP from socket
+        hostname = socket.gethostname()
+        try:
+            ips.add(socket.gethostbyname(hostname))
+        except: pass
+        # Add all IPs from network interfaces
+        try:
+            for info in socket.getaddrinfo(hostname, None):
+                ips.add(info[4][0])
+        except: pass
+    except Exception:
+        pass
+    return ips
+
+LOCAL_IPS = get_all_local_ips()
+
+def is_local_address(ip):
+    """Check if an IP belongs to this machine."""
+    return ip in LOCAL_IPS or ip.startswith('127.') or ip == '172.20.10.2'
 
 def unauthorized_result():
     return json.dumps({
@@ -367,7 +389,16 @@ def connect_peer(headers="guest", body="anonymous"):
     target_ip   = data.get("ip", "127.0.0.1")
     target_port = data.get("port", "2026")
 
-    # Build a GET /get-list request to the remote peer's tracker
+    # Anti-deadlock: Aggressive check for all local/proxy IPs
+    if is_local_address(target_ip):
+        print("[SampleApp] connect_peer: skipping local/proxy check to avoid deadlock")
+        result = {
+            "status": "ok",
+            "peer_alive": True,
+            "remote_peers": peer_list,
+            "message": "Self-check: Peer is local/proxy (auto-alive)",
+        }
+        return json.dumps(result).encode("utf-8")
     raw_request = (
         "GET /get-list HTTP/1.1\r\n"
         "Host: {}:{}\r\n"
@@ -459,11 +490,7 @@ def send_peer(headers="guest", body="anonymous"):
         send_to_peer(ip, port, raw_request.encode())
 
     # Push to remote peer only if it's NOT this server (avoid deadlock loop)
-    # Compare target with our own listening address
-    my_ip = app.ip if app.ip != '0.0.0.0' else '127.0.0.1'
-    is_self = (target_ip == my_ip or target_ip == '127.0.0.1') and int(target_port) == app.port
-
-    if not is_self:
+    if not is_local_address(target_ip):
         t = threading.Thread(
             target=_deliver_async,
             args=(target_ip, target_port, sender, msg_text),
@@ -471,7 +498,7 @@ def send_peer(headers="guest", body="anonymous"):
         )
         t.start()
     else:
-        print("[SampleApp] Skipping socket push to self/proxy to avoid deadlock")
+        print("[SampleApp] Skipping socket push to local/proxy to avoid deadlock")
 
     # Return immediately — browser shows the message via polling within 2 s
     result = {
@@ -556,8 +583,7 @@ def broadcast_peer(headers="guest", body="anonymous"):
     my_ip = app.ip if app.ip != '0.0.0.0' else '127.0.0.1'
     for peer in targets:
         # Avoid self-broadcast deadlock
-        is_self = (peer["ip"] == my_ip or peer["ip"] == '127.0.0.1') and int(peer["port"]) == app.port
-        if is_self:
+        if is_local_address(peer["ip"]):
             continue
             
         t = threading.Thread(target=_send, args=(peer,), daemon=True)
@@ -719,7 +745,6 @@ def leave_channel(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 # Receive incoming P2P message (called by other peers)
-
 @app.route('/receive-message', methods=['POST'])
 def receive_message(headers="guest", body="anonymous"):
 
