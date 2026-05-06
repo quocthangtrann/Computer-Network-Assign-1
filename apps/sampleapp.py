@@ -141,6 +141,13 @@ def require_auth(headers):
         return user
     return validate_basic_auth(headers)
 
+def unauthorized_result():
+    return json.dumps({
+        "status": "error",
+        "message": "Authentication required",
+        "__status__": 401,
+    }).encode("utf-8")
+
 # P2P message helper
 
 def send_to_peer(peer_ip, peer_port, payload_bytes):
@@ -267,6 +274,8 @@ def echo(headers="guest", body="anonymous"):
 @app.route('/submit-info', methods=['POST'])
 def submit_info(headers="guest", body="anonymous"):
     #Register a peer's network information with the tracker (Task 2.3).
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] submit_info body={}".format(body))
     try:
@@ -313,6 +322,8 @@ def get_list(headers="guest", body="anonymous"):
 @app.route('/add-list', methods=['POST'])
 def add_list(headers="guest", body="anonymous"):
     #Add a peer entry to the registry (Task 2.3).
+    if not require_auth(headers):
+        return unauthorized_result()
 
 
     print("[SampleApp] add_list body={}".format(body))
@@ -339,6 +350,8 @@ def add_list(headers="guest", body="anonymous"):
 @app.route('/connect-peer', methods=['POST'])
 def connect_peer(headers="guest", body="anonymous"):
     #Connect to a remote peer and check if it is reachable (Task 2.3).
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] connect_peer body={}".format(body))
     try:
@@ -390,6 +403,8 @@ def connect_peer(headers="guest", body="anonymous"):
 @app.route('/send-peer', methods=['POST'])
 def send_peer(headers="guest", body="anonymous"):
     #Send a direct message to a specific peer (Task 2.3 — Chat Phase).
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] send_peer body={}".format(body))
     try:
@@ -470,6 +485,9 @@ def broadcast_peer(headers="guest", body="anonymous"):
     :param body: JSON body.
     :returns (bytes): JSON summary of delivery attempts.
     """
+    if not require_auth(headers):
+        return unauthorized_result()
+
     print("[SampleApp] broadcast_peer body={}".format(body))
     try:
         data = json.loads(body) if body else {}
@@ -543,6 +561,9 @@ def broadcast_peer(headers="guest", body="anonymous"):
 @app.route('/get-messages', methods=['GET'])
 def get_messages(headers="guest", body="anonymous"):
 
+    if not require_auth(headers):
+        return unauthorized_result()
+
     print("[SampleApp] get_messages called")
     with _lock:
         msg_snapshot = list(messages)
@@ -573,6 +594,9 @@ def get_channels(headers="guest", body="anonymous"):
 @app.route('/get-channel-messages', methods=['POST'])
 def get_channel_messages(headers="guest", body="anonymous"):
     #Return messages belonging to a specific channel (Task 2.3).
+    if not require_auth(headers):
+        return unauthorized_result()
+
     print("[SampleApp] get_channel_messages body={}".format(body))
     try:
         data = json.loads(body) if body else {}
@@ -597,6 +621,8 @@ def get_channel_messages(headers="guest", body="anonymous"):
 @app.route('/broadcast-channel', methods=['POST'])
 def broadcast_channel(headers="guest", body="anonymous"):
     #Broadcast a message to all peers in a specific channel (Task 2.3).
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] broadcast_channel body={}".format(body))
     try:
@@ -654,6 +680,8 @@ def broadcast_channel(headers="guest", body="anonymous"):
 
 @app.route('/leave-channel', methods=['DELETE'])
 def leave_channel(headers="guest", body="anonymous"):
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] leave_channel body={}".format(body))
     try:

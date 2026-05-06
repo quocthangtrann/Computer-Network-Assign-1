@@ -120,7 +120,7 @@
                 <h4>My Identity</h4>
                 <div class="config-group">
                     <label class="config-label">Username</label>
-                    <input type="text" class="config-input" id="myName" value="alice">
+                    <input type="text" class="config-input" id="myName" value="" placeholder="Login required" disabled>
                 </div>
                 <div class="config-row">
                     <div class="config-group">
@@ -265,6 +265,7 @@
         // knownPeers: { username: {ip, port} }  (converted from server's list format)
         let knownPeers = {};
         let joinedChannels = ['general'];
+        let isAuthenticated = false;
 
         const PEER_COLORS = [
             '#6c5ce7', '#00cec9', '#fdcb6e', '#e17055',
@@ -313,7 +314,7 @@
         }
 
         function updateUserDisplay() {
-            const name = document.getElementById('myName').value || 'User';
+            const name = isAuthenticated ? (document.getElementById('myName').value || 'User') : 'Guest';
             document.getElementById('userAvatarSidebar').textContent = name.charAt(0).toUpperCase();
             document.getElementById('userNameSidebar').textContent = name;
         }
@@ -376,12 +377,12 @@
 
             // (a) Register on own server
             try {
-                await fetch(`${getMyBaseUrl()}/submit-info`, { method: "POST", headers, body: payload });
+                await fetch(`${getMyBaseUrl()}/submit-info`, { method: "POST", headers, body: payload, credentials: "include" });
             } catch (e) { /* may already be registered */ }
 
             // (b) Register on tracker (may be cross-origin → CORS headers from backend allow this)
             try {
-                const res = await fetch(`${getTrackerUrl()}/submit-info`, { method: "POST", headers, body: payload });
+                const res = await fetch(`${getTrackerUrl()}/submit-info`, { method: "POST", headers, body: payload, credentials: "include" });
                 const data = await res.json();
                 if (data.status === 'ok') {
                     showToast(`Registered as ${myName}`);
@@ -402,7 +403,7 @@
          */
         async function getPeerList() {
             try {
-                const res = await fetch(`${getTrackerUrl()}/get-list`);
+                const res = await fetch(`${getTrackerUrl()}/get-list`, { credentials: "include" });
                 const data = await res.json();
 
                 // Convert list [{username, ip, port}] → dict {username: {ip, port}}
@@ -419,7 +420,8 @@
                         syncRequests.push(fetch(`${getMyBaseUrl()}/add-list`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ username: name, ip: info.ip, port: info.port })
+                            body: JSON.stringify({ username: name, ip: info.ip, port: info.port }),
+                            credentials: "include"
                         }).catch(() => { }));
                     }
                 }
@@ -484,7 +486,8 @@
                 const res = await fetch(`${getMyBaseUrl()}/connect-peer`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ ip: targetIp, port: targetPort })
+                    body: JSON.stringify({ ip: targetIp, port: targetPort }),
+                    credentials: "include"
                 });
                 const data = await res.json();
                 if (data.peer_alive) {
@@ -545,7 +548,8 @@
                             msg: msgText,
                             ip: document.getElementById('targetIp').value,
                             port: targetPort
-                        })
+                        }),
+                        credentials: "include"
                     });
                     if (res.ok) {
                         // Fix #1 Double-message: do NOT call addMessage() here.
@@ -567,7 +571,8 @@
                     const res = await fetch(`${getMyBaseUrl()}/broadcast-channel`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ from: myName, msg: msgText, channel: currentView })
+                        body: JSON.stringify({ from: myName, msg: msgText, channel: currentView }),
+                        credentials: "include"
                     });
                     if (res.ok) {
                         document.getElementById('messageInput').value = '';
@@ -599,7 +604,8 @@
                 const res = await fetch(`${getMyBaseUrl()}/broadcast-peer`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ from: myName, msg: msgText, peers })
+                    body: JSON.stringify({ from: myName, msg: msgText, peers }),
+                    credentials: "include"
                 });
                 if (res.ok) {
                     const data = await res.json();
@@ -670,9 +676,10 @@
          */
         async function fetchMessages() {
             if (currentView !== 'direct') return;
+            if (!isAuthenticated) return;
 
             try {
-                const res = await fetch(`${getMyBaseUrl()}/get-messages`);
+                const res = await fetch(`${getMyBaseUrl()}/get-messages`, { credentials: "include" });
                 if (!res.ok) return;
                 const data = await res.json();
                 const msgs = data.messages || [];
@@ -701,12 +708,14 @@
          */
         async function fetchChannelMessages(channelName) {
             if (currentView !== channelName) return;
+            if (!isAuthenticated) return;
 
             try {
                 const res = await fetch(`${getMyBaseUrl()}/get-channel-messages`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ channel: channelName })
+                    body: JSON.stringify({ channel: channelName }),
+                    credentials: "include"
                 });
                 if (!res.ok) return;
                 const data = await res.json();
@@ -805,8 +814,10 @@
         }
 
         function applyAuthenticatedUser(username) {
+            isAuthenticated = true;
             document.getElementById('authStatus').textContent = 'Logged in as ' + username;
             document.getElementById('loginBtn').textContent = 'Logged In';
+            document.getElementById('myName').disabled = false;
             document.getElementById('myName').value = username;
             updateUserDisplay();
         }
@@ -891,8 +902,12 @@
         }
 
         function logoutUser() {
+            isAuthenticated = false;
             document.getElementById('authStatus').textContent = 'Not logged in';
             document.getElementById('loginBtn').textContent = 'Login';
+            document.getElementById('myName').disabled = true;
+            document.getElementById('myName').value = '';
+            updateUserDisplay();
             showToast('Logged out.');
         }
 
@@ -911,13 +926,13 @@
             document.getElementById('targetIp').value = targetIp;
 
             if (port === "2026") {
-                document.getElementById('myName').value = "alice";
+                document.getElementById('loginUsername').value = "alice";
                 document.getElementById('targetPort').value = "2027";
             } else if (port === "2027") {
-                document.getElementById('myName').value = "bob";
+                document.getElementById('loginUsername').value = "bob";
                 document.getElementById('targetPort').value = "2026";
             } else {
-                document.getElementById('myName').value = "Peer_" + port;
+                document.getElementById('loginUsername').value = "Peer_" + port;
             }
 
             updateUserDisplay();
