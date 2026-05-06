@@ -287,6 +287,11 @@ def submit_info(headers="guest", body="anonymous"):
     peer_ip   = data.get("ip", "")
     peer_port = data.get("port", "")
 
+    # If the peer reports a loopback or proxy IP, try to use their actual connection IP
+    # headers is a CaseInsensitiveDict, we can look for 'x-forwarded-for' or similar, 
+    # but AsynapRous HttpAdapter doesn't pass the raw addr yet.
+    # However, we can check if it's the server's own IP.
+    
     if not peer_ip or not peer_port:
         result = {"status": "error", "message": "ip and port are required"}
         return json.dumps(result).encode("utf-8")
@@ -453,12 +458,20 @@ def send_peer(headers="guest", body="anonymous"):
         ).format(ip, port, len(msg_payload), msg_payload)
         send_to_peer(ip, port, raw_request.encode())
 
-    t = threading.Thread(
-        target=_deliver_async,
-        args=(target_ip, target_port, sender, msg_text),
-        daemon=True
-    )
-    t.start()
+    # Push to remote peer only if it's NOT this server (avoid deadlock loop)
+    # Compare target with our own listening address
+    my_ip = app.ip if app.ip != '0.0.0.0' else '127.0.0.1'
+    is_self = (target_ip == my_ip or target_ip == '127.0.0.1') and int(target_port) == app.port
+
+    if not is_self:
+        t = threading.Thread(
+            target=_deliver_async,
+            args=(target_ip, target_port, sender, msg_text),
+            daemon=True
+        )
+        t.start()
+    else:
+        print("[SampleApp] Skipping socket push to self/proxy to avoid deadlock")
 
     # Return immediately — browser shows the message via polling within 2 s
     result = {
@@ -540,7 +553,13 @@ def broadcast_peer(headers="guest", body="anonymous"):
                 failed.append(peer["username"])
 
     threads = []
+    my_ip = app.ip if app.ip != '0.0.0.0' else '127.0.0.1'
     for peer in targets:
+        # Avoid self-broadcast deadlock
+        is_self = (peer["ip"] == my_ip or peer["ip"] == '127.0.0.1') and int(peer["port"]) == app.port
+        if is_self:
+            continue
+            
         t = threading.Thread(target=_send, args=(peer,))
         t.start()
         threads.append(t)
