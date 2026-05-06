@@ -481,12 +481,22 @@ def broadcast_peer(headers="guest", body="anonymous"):
 
     # Record in local message log
     entry = {"from": sender, "to": "broadcast", "msg": msg_text, "ts": time.time()}
+    request_peers = data.get("peers")
+    if isinstance(request_peers, list):
+        source_peers = request_peers
+    else:
+        with _lock:
+            source_peers = list(peer_list)
+
     with _lock:
         messages.append(entry)
-        
-        # Never connect back to the sender's own peer entry. In callback mode
-        # that would deadlock until timeout because this request is still being handled.
-        targets = [p for p in peer_list if p.get("username") != sender]
+
+    # Never connect back to the sender's own peer entry. In callback mode
+    # that would deadlock until timeout because this request is still being handled.
+    targets = [
+        p for p in source_peers
+        if p.get("username") != sender and p.get("ip") and p.get("port")
+    ]
 
     delivered = []
     failed = []

@@ -122,9 +122,15 @@
                     <label class="config-label">Username</label>
                     <input type="text" class="config-input" id="myName" value="alice">
                 </div>
-                <div class="config-group">
-                    <label class="config-label">My Local Port</label>
-                    <input type="number" class="config-input" id="myPort" value="2026">
+                <div class="config-row">
+                    <div class="config-group">
+                        <label class="config-label">My IP</label>
+                        <input type="text" class="config-input" id="myIp" value="127.0.0.1">
+                    </div>
+                    <div class="config-group">
+                        <label class="config-label">Port</label>
+                        <input type="number" class="config-input" id="myPort" value="2026">
+                    </div>
                 </div>
             </div>
 
@@ -275,8 +281,11 @@
         // ---- URL helpers ----
         // All API calls go to own server (myPort) to avoid CORS issues.
         // Cross-origin calls (trackerPort, targetPort) use CORS headers added by backend.
+        function getMyIp() {
+            return document.getElementById('myIp').value.trim() || window.location.hostname || '127.0.0.1';
+        }
         function getMyBaseUrl() {
-            return `http://127.0.0.1:${document.getElementById('myPort').value}`;
+            return `http://${getMyIp()}:${document.getElementById('myPort').value}`;
         }
         function getTargetUrl() {
             return `http://${document.getElementById('targetIp').value}:${document.getElementById('targetPort').value}`;
@@ -360,7 +369,7 @@
         async function registerPeer() {
             const myName = document.getElementById('myName').value;
             const myPort = document.getElementById('myPort').value;
-            const payload = JSON.stringify({ username: myName, ip: "127.0.0.1", port: myPort });
+            const payload = JSON.stringify({ username: myName, ip: getMyIp(), port: myPort });
             const headers = { "Content-Type": "application/json" };
 
             let ok = false;
@@ -404,15 +413,17 @@
 
                 // Sync into own server so /send-peer can route messages
                 const myName = document.getElementById('myName').value;
+                const syncRequests = [];
                 for (const [name, info] of Object.entries(knownPeers)) {
                     if (name !== myName) {
-                        fetch(`${getMyBaseUrl()}/add-list`, {
+                        syncRequests.push(fetch(`${getMyBaseUrl()}/add-list`, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ username: name, ip: info.ip, port: info.port })
-                        }).catch(() => { });
+                        }).catch(() => { }));
                     }
                 }
+                await Promise.all(syncRequests);
 
                 renderPeerList();
                 const count = Object.keys(knownPeers).length;
@@ -449,7 +460,7 @@
                 item.innerHTML = `
             <div class="peer-avatar" style="background:${color}">${name.charAt(0).toUpperCase()}</div>
             <span class="peer-name">${name}${isSelf ? ' (You)' : ''}</span>
-            <span class="peer-port">:${info.port}</span>
+            <span class="peer-port">${info.ip}:${info.port}</span>
             <div class="peer-status-dot"></div>
         `;
                 container.appendChild(item);
@@ -580,10 +591,15 @@
 
             const myName = document.getElementById('myName').value;
             try {
+                const peers = Object.entries(knownPeers).map(([username, info]) => ({
+                    username,
+                    ip: info.ip,
+                    port: info.port
+                }));
                 const res = await fetch(`${getMyBaseUrl()}/broadcast-peer`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ from: myName, msg: msgText })
+                    body: JSON.stringify({ from: myName, msg: msgText, peers })
                 });
                 if (res.ok) {
                     const data = await res.json();
@@ -839,9 +855,18 @@
         }
 
         function autoConfigure() {
+            const params = new URLSearchParams(window.location.search);
             const port = window.location.port || "2026";
+            const host = window.location.hostname || "127.0.0.1";
+            const trackerIp = params.get('trackerIp') || params.get('tracker') || host;
+            const myIp = params.get('peerIp') || params.get('myIp') || host;
+            const targetIp = params.get('targetIp') || trackerIp;
+
+            document.getElementById('myIp').value = myIp;
             document.getElementById('myPort').value = port;
             document.getElementById('trackerPort').value = "2026";  // shared tracker = port 2026
+            document.getElementById('trackerIp').value = trackerIp;
+            document.getElementById('targetIp').value = targetIp;
 
             if (port === "2026") {
                 document.getElementById('myName').value = "alice";
