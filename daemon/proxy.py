@@ -49,6 +49,8 @@ PROXY_PASS = {
     "app2.local":          ('192.168.56.103', 9002),
 }
 
+round_robin_counter = {}
+
 
 def forward_request(host, port, request):
     # Forward a raw HTTP request to a backend server and return the response.
@@ -86,6 +88,7 @@ def forward_request(host, port, request):
 
 
 def resolve_routing_policy(hostname, routes):
+    global round_robin_counter
     # Determine the target backend host and port for an incoming hostname.
     print("[Proxy] Resolving hostname: {}".format(hostname))
 
@@ -111,9 +114,14 @@ def resolve_routing_policy(hostname, routes):
             proxy_host, proxy_port = proxy_map[0].split(":", 1)
         else:
             # Multiple backends — round-robin (extension point)
-            # TODO: apply more sophisticated policy handling here
-            #       e.g. weighted round-robin, least-connections, …
-            proxy_host, proxy_port = proxy_map[0].split(":", 1)
+            # Implement actual Round-Robin Load Balancing
+            if hostname not in round_robin_counter:
+                round_robin_counter[hostname] = 0
+            
+            index = round_robin_counter[hostname] % len(proxy_map)
+            proxy_host, proxy_port = proxy_map[index].split(":", 1)
+            
+            round_robin_counter[hostname] += 1
     else:
         # Single string "host:port"
         print("[Proxy] Singular route for hostname {} to {}".format(hostname, proxy_map))
