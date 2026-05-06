@@ -804,6 +804,13 @@
             document.getElementById('loginError').style.display = 'none';
         }
 
+        function applyAuthenticatedUser(username) {
+            document.getElementById('authStatus').textContent = 'Logged in as ' + username;
+            document.getElementById('loginBtn').textContent = 'Logged In';
+            document.getElementById('myName').value = username;
+            updateUserDisplay();
+        }
+
         async function loginUser() {
             const username = document.getElementById('loginUsername').value.trim();
             const password = document.getElementById('loginPassword').value;
@@ -828,12 +835,19 @@
                 try { data = await res.json(); } catch (_) { }
 
                 if (res.ok && data.status === 'ok') {
+                    try {
+                        await fetch(`${getMyBaseUrl()}/login`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ username: data.username || username, password }),
+                            credentials: 'include'
+                        });
+                    } catch (_) { }
+
                     closeLoginModal();
-                    document.getElementById('authStatus').textContent = 'Logged in as ' + (data.username || username);
-                    document.getElementById('loginBtn').textContent = 'Logged In';
-                    document.getElementById('myName').value = data.username || username;
-                    updateUserDisplay();
-                    showToast('Welcome, ' + (data.username || username) + '!');
+                    const loggedInUser = data.username || username;
+                    applyAuthenticatedUser(loggedInUser);
+                    showToast('Welcome, ' + loggedInUser + '!');
 
                     // Auto-register peer right after login so the user
                     // can immediately start chatting without extra clicks
@@ -845,6 +859,34 @@
             } catch (e) {
                 errDiv.textContent = 'Server unreachable: ' + e.message;
                 errDiv.style.display = 'block';
+            }
+        }
+
+        async function restoreSavedSession() {
+            async function validateSession(baseUrl) {
+                const res = await fetch(`${baseUrl}/hello`, {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+                if (!res.ok) return null;
+
+                const data = await res.json();
+                return (data.status === 'ok' && data.user) ? data.user : null;
+            }
+
+            try {
+                let restoredUser = await validateSession(getMyBaseUrl());
+                if (!restoredUser && getMyBaseUrl() !== getTrackerUrl()) {
+                    restoredUser = await validateSession(getTrackerUrl());
+                }
+
+                if (restoredUser) {
+                    applyAuthenticatedUser(restoredUser);
+                    await registerPeer();
+                    showToast('Session restored for ' + restoredUser);
+                }
+            } catch (e) {
+                // No saved session, expired in-memory session, or tracker unreachable.
             }
         }
 
@@ -882,6 +924,7 @@
         }
 
         autoConfigure();
+        restoreSavedSession();
     </script>
 </body>
 
