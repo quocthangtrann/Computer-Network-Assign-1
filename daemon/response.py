@@ -314,14 +314,21 @@ class Response():
 
 
         body = b"401 Unauthorized"
-        header = (
-            "HTTP/1.1 401 Unauthorized\r\n"
-            'WWW-Authenticate: Basic realm="{}"\r\n'.format(realm) +
-            "Content-Type: text/plain\r\n"
-            "Content-Length: {}\r\n".format(len(body)) +
-            "Connection: close\r\n"
-            "\r\n"
-        )
+        headers = {
+            "WWW-Authenticate": 'Basic realm="{}"'.format(realm),
+            "Content-Type": "text/plain",
+            "Content-Length": str(len(body)),
+            "Connection": "close",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
+        header_lines = ["HTTP/1.1 401 Unauthorized"]
+        for key, value in headers.items():
+            header_lines.append("{}: {}".format(key, value))
+        header_lines.append("")
+        header_lines.append("")
+        header = "\r\n".join(header_lines)
         return header.encode('utf-8') + body
 
     # JSON response builder (for REST API routes)

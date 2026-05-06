@@ -160,18 +160,22 @@ class HttpAdapter:
 
         origin = req.headers.get('origin', '*')
         cors_headers = {
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
         }
 
         # -- Handle OPTIONS preflight (CORS pre-flight request from browser) --
         if req.method == "OPTIONS":
             preflight = (
                 "HTTP/1.1 200 OK\r\n"
-                "Access-Control-Allow-Origin: *\r\n"
+                "Access-Control-Allow-Origin: {}\r\n".format(origin) +
                 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
                 "Access-Control-Allow-Headers: Content-Type, Authorization, Cookie\r\n"
+                "Access-Control-Allow-Credentials: true\r\n"
+                "Vary: Origin\r\n"
                 "Access-Control-Max-Age: 86400\r\n"
                 "Content-Length: 0\r\n"
                 "Connection: close\r\n"
@@ -228,7 +232,7 @@ class HttpAdapter:
 
             if http_status == 401:
                 # Return a proper 401 with WWW-Authenticate challenge (Task 2.2)
-                response_bytes = resp.build_unauthorized()
+                response_bytes = resp.build_unauthorized(extra_headers=extra_headers)
             else:
                 # Re-encode cleaned payload (sentinel keys removed)
                 clean_result = json.dumps(payload).encode("utf-8") if payload else result
