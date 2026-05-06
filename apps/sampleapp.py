@@ -560,17 +560,12 @@ def broadcast_peer(headers="guest", body="anonymous"):
         if is_self:
             continue
             
-        t = threading.Thread(target=_send, args=(peer,))
+        t = threading.Thread(target=_send, args=(peer,), daemon=True)
         t.start()
-        threads.append(t)
-    for t in threads:
-        t.join(timeout=5)
 
     result = {
         "status": "ok",
-        "message": "Broadcast sent",
-        "delivered": delivered,
-        "failed": failed,
+        "message": "Broadcast is being delivered in the background",
         "total_peers": len(targets),
     }
     return json.dumps(result).encode("utf-8")
@@ -681,17 +676,14 @@ def broadcast_channel(headers="guest", body="anonymous"):
             failed.append(peer.get("username"))
 
     # Fire all deliveries concurrently in daemon threads
-    threads = [threading.Thread(target=_send_channel, args=(p,), daemon=True) for p in targets]
-    for t in threads:
+    for p in targets:
+        t = threading.Thread(target=_send_channel, args=(p,), daemon=True)
         t.start()
-    for t in threads:
-        t.join(timeout=3)
 
     result = {
         "status": "ok",
         "channel": channel_name,
-        "delivered": delivered,
-        "failed": failed,
+        "message": "Channel broadcast initiated",
     }
     return json.dumps(result).encode("utf-8")
 
