@@ -121,11 +121,7 @@ class HttpAdapter:
 
         # CORS headers injected into every response so browser fetch() to
         # different ports (e.g. 2026 ↔ 2027) works without "blocked by CORS" errors.
-        cors_headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
-        }
+        
 
         # -- Read raw request bytes from the socket -----------------------
         # TODO: handle for App hook here — read request and dispatch
@@ -161,6 +157,13 @@ class HttpAdapter:
         # -- Parse request -----------------------------------------------
         req.prepare(msg, routes)
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
+
+        origin = req.headers.get('origin', '*')
+        cors_headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
+        }
 
         # -- Handle OPTIONS preflight (CORS pre-flight request from browser) --
         if req.method == "OPTIONS":
