@@ -217,6 +217,52 @@ body {
     flex-shrink: 0;
 }
 
+.channel-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.channel-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.channel-item:hover .channel-actions,
+.channel-item.active .channel-actions {
+    opacity: 1;
+}
+
+.channel-action-btn {
+    width: 22px;
+    height: 22px;
+    border: 1px solid rgba(162, 155, 254, 0.35);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.2);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.channel-action-btn:hover {
+    color: var(--accent-light);
+    border-color: var(--accent-light);
+}
+
+.channel-action-btn.danger:hover {
+    color: #ff7675;
+    border-color: #ff7675;
+}
+
 /* ---- Add Channel Button ---- */
 .add-channel-btn {
     width: 100%;

@@ -40,6 +40,8 @@ REST endpoints (Task 2.3):
   GET  /get-messages
   GET  /get-channels
   POST /create-channel
+  POST /rename-channel
+  DELETE /delete-channel
   POST /get-channel-messages
   POST /broadcast-channel
   DELETE /leave-channel
@@ -207,6 +209,52 @@ def normalize_channel_name(name):
     name = re.sub(r"\s+", "-", name)
     name = re.sub(r"[^a-z0-9_-]", "", name)
     return name
+
+
+def announce_channel_event(event_type, channel_name, username, member, peers, extra=None):
+    targets = [
+        p
+        for p in peers
+        if p.get("username") != username and p.get("ip") and p.get("port")
+    ]
+    delivered = []
+    failed = []
+
+    def _announce(peer):
+        payload = {
+            "type": event_type,
+            "channel": channel_name,
+            "from": username,
+            "creator": member,
+        }
+        if extra:
+            payload.update(extra)
+        msg_payload = json.dumps(payload)
+        raw_request = (
+            "POST /receive-channel HTTP/1.1\r\n"
+            "Host: {}:{}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
+        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
+        with _lock:
+            if resp:
+                delivered.append(peer.get("username"))
+            else:
+                failed.append(peer.get("username"))
+
+    threads = [
+        threading.Thread(target=_announce, args=(p,), daemon=True) for p in targets
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3)
+
+    return delivered, failed
 
 
 # AsynapRous application instance
@@ -729,55 +777,145 @@ def create_channel(headers="guest", body="anonymous"):
             members.append(member)
         source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
 
-    should_announce = data.get("announce", True) is not False
-    targets = []
-    if should_announce:
-        targets = [
-            p
-            for p in source_peers
-            if p.get("username") != username and p.get("ip") and p.get("port")
-        ]
     delivered = []
     failed = []
-
-    def _announce_channel(peer):
-        msg_payload = json.dumps(
-            {
-                "channel": channel_name,
-                "from": username,
-                "creator": member,
-                "type": "channel-created",
-            }
+    if data.get("announce", True) is not False:
+        delivered, failed = announce_channel_event(
+            "channel-created",
+            channel_name,
+            username,
+            member,
+            source_peers,
         )
-        raw_request = (
-            "POST /receive-channel HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
-        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
-        with _lock:
-            if resp:
-                delivered.append(peer.get("username"))
-            else:
-                failed.append(peer.get("username"))
-
-    threads = [
-        threading.Thread(target=_announce_channel, args=(p,), daemon=True)
-        for p in targets
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=3)
 
     result = {
         "status": "ok",
         "channel": channel_name,
         "message": "Channel #{} is available".format(channel_name),
+        "delivered": delivered,
+        "failed": failed,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/rename-channel", methods=["POST"])
+def rename_channel(headers="guest", body="anonymous"):
+    auth_user = require_auth(headers)
+    if not auth_user:
+        return unauthorized_result()
+
+    print("[SampleApp] rename_channel body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    old_name = normalize_channel_name(data.get("old_channel") or data.get("channel"))
+    new_name = normalize_channel_name(data.get("new_channel") or data.get("name"))
+    if not old_name or not new_name or old_name == "general" or new_name == "direct":
+        result = {"status": "error", "message": "Invalid channel rename"}
+        return json.dumps(result).encode("utf-8")
+
+    username = data.get("username") or auth_user
+    member = {
+        "username": username,
+        "ip": data.get("ip", ""),
+        "port": data.get("port", ""),
+    }
+    request_peers = data.get("peers")
+
+    with _lock:
+        old_members = channels.pop(old_name, [])
+        merged_members = channels.setdefault(new_name, [])
+        seen_users = {m.get("username") for m in merged_members}
+        for old_member in old_members:
+            if old_member.get("username") not in seen_users:
+                merged_members.append(old_member)
+                seen_users.add(old_member.get("username"))
+        if username:
+            merged_members[:] = [
+                m for m in merged_members if m.get("username") != username
+            ]
+            merged_members.append(member)
+
+        for msg in messages:
+            if msg.get("type") == "channel" and msg.get("channel") == old_name:
+                msg["channel"] = new_name
+                if msg.get("to") == old_name:
+                    msg["to"] = new_name
+
+        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+
+    delivered = []
+    failed = []
+    if data.get("announce", True) is not False:
+        delivered, failed = announce_channel_event(
+            "channel-renamed",
+            old_name,
+            username,
+            member,
+            source_peers,
+            {"new_channel": new_name},
+        )
+
+    result = {
+        "status": "ok",
+        "old_channel": old_name,
+        "channel": new_name,
+        "delivered": delivered,
+        "failed": failed,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/delete-channel", methods=["DELETE", "POST"])
+def delete_channel(headers="guest", body="anonymous"):
+    auth_user = require_auth(headers)
+    if not auth_user:
+        return unauthorized_result()
+
+    print("[SampleApp] delete_channel body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    channel_name = normalize_channel_name(data.get("channel", ""))
+    if not channel_name or channel_name == "general":
+        result = {"status": "error", "message": "Cannot delete this channel"}
+        return json.dumps(result).encode("utf-8")
+
+    username = data.get("username") or auth_user
+    member = {
+        "username": username,
+        "ip": data.get("ip", ""),
+        "port": data.get("port", ""),
+    }
+    request_peers = data.get("peers")
+
+    with _lock:
+        channels.pop(channel_name, None)
+        messages[:] = [
+            m
+            for m in messages
+            if not (m.get("type") == "channel" and m.get("channel") == channel_name)
+        ]
+        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+
+    delivered = []
+    failed = []
+    if data.get("announce", True) is not False:
+        delivered, failed = announce_channel_event(
+            "channel-deleted",
+            channel_name,
+            username,
+            member,
+            source_peers,
+        )
+
+    result = {
+        "status": "ok",
+        "channel": channel_name,
         "delivered": delivered,
         "failed": failed,
     }
@@ -793,9 +931,56 @@ def receive_channel(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
+    event_type = data.get("type", "channel-created")
     channel_name = normalize_channel_name(data.get("channel", ""))
     if not channel_name or channel_name == "direct":
         result = {"status": "error", "message": "Invalid channel name"}
+        return json.dumps(result).encode("utf-8")
+
+    if event_type == "channel-renamed":
+        new_name = normalize_channel_name(data.get("new_channel", ""))
+        if not new_name or channel_name == "general" or new_name == "direct":
+            result = {"status": "error", "message": "Invalid channel rename"}
+            return json.dumps(result).encode("utf-8")
+        with _lock:
+            old_members = channels.pop(channel_name, [])
+            merged_members = channels.setdefault(new_name, [])
+            seen_users = {m.get("username") for m in merged_members}
+            for member in old_members:
+                if member.get("username") not in seen_users:
+                    merged_members.append(member)
+                    seen_users.add(member.get("username"))
+            for msg in messages:
+                if msg.get("type") == "channel" and msg.get("channel") == channel_name:
+                    msg["channel"] = new_name
+                    if msg.get("to") == channel_name:
+                        msg["to"] = new_name
+        result = {
+            "status": "ok",
+            "old_channel": channel_name,
+            "channel": new_name,
+            "message": "Channel #{} renamed to #{}".format(channel_name, new_name),
+        }
+        return json.dumps(result).encode("utf-8")
+
+    if event_type == "channel-deleted":
+        if channel_name == "general":
+            result = {"status": "error", "message": "Cannot delete this channel"}
+            return json.dumps(result).encode("utf-8")
+        with _lock:
+            channels.pop(channel_name, None)
+            messages[:] = [
+                m
+                for m in messages
+                if not (
+                    m.get("type") == "channel" and m.get("channel") == channel_name
+                )
+            ]
+        result = {
+            "status": "ok",
+            "channel": channel_name,
+            "message": "Channel #{} deleted".format(channel_name),
+        }
         return json.dumps(result).encode("utf-8")
 
     creator = data.get("creator") or {}
@@ -1007,6 +1192,8 @@ TRACKER_ROUTE_PATHS = {
     "/get-list",
     "/get-channels",
     "/create-channel",
+    "/rename-channel",
+    "/delete-channel",
 }
 
 PEER_ROUTE_PATHS = {
@@ -1022,6 +1209,8 @@ PEER_ROUTE_PATHS = {
     "/get-messages",
     "/get-channels",
     "/create-channel",
+    "/rename-channel",
+    "/delete-channel",
     "/receive-channel",
     "/get-channel-messages",
     "/broadcast-channel",

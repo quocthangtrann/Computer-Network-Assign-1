@@ -490,19 +490,25 @@ function addMessage(msgObj) {
     const badgeClass = msgObj.type || "direct";
     const badgeLabel = badgeClass.charAt(0).toUpperCase() + badgeClass.slice(1);
     const senderName = msgObj.from || "Unknown";
-    const color = getPeerColor(senderName.replace(" (You)", ""));
+    const myName = document.getElementById("myName").value.trim();
+    const baseSenderName = senderName.replace(" (You)", "");
+    const isOwnMessage = msgObj.own || (myName && baseSenderName === myName);
+    const displaySender = isOwnMessage
+        ? `${baseSenderName} (You)`
+        : senderName;
+    const color = getPeerColor(baseSenderName);
     const time = new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
     });
 
-    if (senderName.includes("(You)")) {
+    if (isOwnMessage) {
         group.classList.add("me");
     }
 
     group.innerHTML = `
         <div class="msg-sender" style="color:${color}">
-            ${escapeHtml(senderName)}
+            ${escapeHtml(displaySender)}
             <span class="msg-badge ${badgeClass}">${badgeLabel}</span>
             <span class="msg-time">${time}</span>
         </div>
@@ -720,6 +726,21 @@ function ensureChannelInSidebar(name) {
     addChannelToSidebar(name);
 }
 
+function removeChannelFromSidebar(name) {
+    joinedChannels = joinedChannels.filter((channel) => channel !== name);
+    delete lastChannelMsgCounts[name];
+    delete seenChannelMessageKeys[name];
+
+    const item = document.querySelector(`[data-channel="${name}"]`);
+    if (item) item.remove();
+
+    if (currentView === name) {
+        switchView("direct");
+        document.getElementById("chatMessages").innerHTML =
+            '<div class="msg-system">Channel removed.</div>';
+    }
+}
+
 function addChannelToSidebar(name) {
     const list = document.getElementById("channelList");
     const li = document.createElement("li");
@@ -730,14 +751,44 @@ function addChannelToSidebar(name) {
     hash.className = "ch-hash";
     hash.textContent = "#";
     const label = document.createElement("span");
+    label.className = "channel-name";
     label.textContent = name;
+
     li.append(hash, label);
+    if (name !== "general") {
+        const actions = document.createElement("span");
+        actions.className = "channel-actions";
+
+        const renameBtn = document.createElement("button");
+        renameBtn.className = "channel-action-btn";
+        renameBtn.type = "button";
+        renameBtn.title = "Rename channel";
+        renameBtn.textContent = "✎";
+        renameBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            renameChannel(name);
+        });
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "channel-action-btn danger";
+        deleteBtn.type = "button";
+        deleteBtn.title = "Delete channel";
+        deleteBtn.textContent = "×";
+        deleteBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteChannel(name);
+        });
+
+        actions.append(renameBtn, deleteBtn);
+        li.append(actions);
+    }
     list.appendChild(li);
 }
 
 async function syncChannels() {
     const endpoints = [getTrackerUrl(), getMyBaseUrl()];
     const names = new Set(["general"]);
+    let successfulSyncs = 0;
 
     await Promise.all(
         endpoints.map(async (baseUrl) => {
@@ -748,6 +799,7 @@ async function syncChannels() {
                 });
                 if (!res.ok) return;
                 const data = await readJsonResponse(res);
+                successfulSyncs++;
                 const channelNames = Array.isArray(data.names)
                     ? data.names
                     : Object.keys(data.channels || {});
@@ -762,7 +814,114 @@ async function syncChannels() {
         }),
     );
 
+    if (successfulSyncs === 0) return;
+
+    joinedChannels
+        .filter((name) => !names.has(name))
+        .forEach((name) => removeChannelFromSidebar(name));
     names.forEach((name) => ensureChannelInSidebar(name));
+}
+
+function peerPayloadList() {
+    return Object.entries(knownPeers).map(([username, info]) => ({
+        username,
+        ip: info.ip,
+        port: info.port,
+    }));
+}
+
+async function updateTrackerChannel(endpoint, method, body) {
+    return fetch(`${getTrackerUrl()}/${endpoint}`, {
+        method,
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(Object.assign({}, body, { announce: false })),
+        credentials: "include",
+    }).catch(() => {});
+}
+
+async function renameChannel(oldName) {
+    if (oldName === "general") return;
+
+    const rawName = prompt("Rename channel", oldName);
+    if (rawName === null) return;
+
+    const newName = normalizeChannelName(rawName);
+    if (!newName || newName === "direct" || newName === oldName) return;
+
+    try {
+        await getPeerList(false);
+        const myName = document.getElementById("myName").value;
+        const wasCurrentChannel = currentView === oldName;
+        const payload = {
+            old_channel: oldName,
+            new_channel: newName,
+            username: myName,
+            ip: getMyIp(),
+            port: document.getElementById("myPort").value,
+            peers: peerPayloadList(),
+        };
+
+        const res = await fetch(`${getMyBaseUrl()}/rename-channel`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(payload),
+            credentials: "include",
+        });
+        const data = await readJsonResponse(res);
+        if (!res.ok || data.status === "error") {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+
+        const renamedChannel = data.channel || newName;
+        removeChannelFromSidebar(oldName);
+        ensureChannelInSidebar(renamedChannel);
+        await updateTrackerChannel("rename-channel", "POST", payload);
+        await syncChannels();
+        if (wasCurrentChannel) switchChannel(renamedChannel);
+        showToast(
+            `Renamed #${oldName} to #${renamedChannel}. Notified ${data.delivered?.length || 0} peer(s).`,
+        );
+    } catch (e) {
+        showToast("Rename failed: " + e.message);
+    }
+}
+
+async function deleteChannel(name) {
+    if (name === "general") return;
+    if (!confirm(`Delete #${name}? Messages in this channel will be removed.`)) {
+        return;
+    }
+
+    try {
+        await getPeerList(false);
+        const payload = {
+            channel: name,
+            username: document.getElementById("myName").value,
+            ip: getMyIp(),
+            port: document.getElementById("myPort").value,
+            peers: peerPayloadList(),
+        };
+
+        const res = await fetch(`${getMyBaseUrl()}/delete-channel`, {
+            method: "DELETE",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(payload),
+            credentials: "include",
+        });
+        const data = await readJsonResponse(res);
+        if (!res.ok || data.status === "error") {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+
+        removeChannelFromSidebar(name);
+        await updateTrackerChannel("delete-channel", "DELETE", payload);
+        await syncChannels();
+        showToast(
+            `Deleted #${name}. Notified ${data.delivered?.length || 0} peer(s).`,
+        );
+    } catch (e) {
+        showToast("Delete failed: " + e.message);
+    }
 }
 
 // ============================================================
