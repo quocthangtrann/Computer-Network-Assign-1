@@ -707,6 +707,12 @@ body {
     background: var(--bg-hover);
 }
 
+.peer-item.selected {
+    background: rgba(124, 92, 255, 0.22);
+    border-left: 3px solid var(--accent);
+    padding-left: 13px;
+}
+
 .peer-avatar {
     width: 30px;
     height: 30px;

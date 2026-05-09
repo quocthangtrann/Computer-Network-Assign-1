@@ -187,6 +187,18 @@ def send_to_peer(peer_ip, peer_port, payload_bytes):
         return None
 
 
+def detect_local_ip(target_host="8.8.8.8", target_port=80):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((target_host, int(target_port)))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception as e:
+        print("[SampleApp] detect_local_ip error: {}".format(e))
+        return "127.0.0.1"
+
+
 # AsynapRous application instance
 
 app = AsynapRous()
@@ -290,6 +302,23 @@ def client_info(headers="guest", body="anonymous"):
     result = {
         "status": "ok",
         "client_ip": client_ip,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/local-info", methods=["POST", "GET"])
+def local_info(headers="guest", body="anonymous"):
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    target_host = data.get("target_host") or "8.8.8.8"
+    target_port = data.get("target_port") or 80
+    local_ip = detect_local_ip(target_host, target_port)
+    result = {
+        "status": "ok",
+        "local_ip": local_ip,
     }
     return json.dumps(result).encode("utf-8")
 
@@ -804,6 +833,7 @@ PEER_ROUTE_PATHS = {
     "/login",
     "/hello",
     "/echo",
+    "/local-info",
     "/peer-info",
     "/add-list",
     "/connect-peer",

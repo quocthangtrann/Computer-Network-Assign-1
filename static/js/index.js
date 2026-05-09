@@ -10,6 +10,7 @@ let joinedChannels = ["general"];
 let isAuthenticated = false;
 let trackerApiBase = "";
 let authToken = "";
+let selectedPeer = null;
 
 const PEER_COLORS = [
     "#6c5ce7",
@@ -42,8 +43,8 @@ function getMyIp() {
 function getMyBaseUrl() {
     return `http://${getMyIp()}:${document.getElementById("myPort").value}`;
 }
-function getTargetUrl() {
-    return `http://${document.getElementById("targetIp").value}:${document.getElementById("targetPort").value}`;
+function getLoopbackBackendUrl() {
+    return `http://127.0.0.1:${document.getElementById("myPort").value}`;
 }
 function getTrackerUrl() {
     if (trackerApiBase) return trackerApiBase;
@@ -55,6 +56,10 @@ function authHeaders(extra) {
         headers["Authorization"] = "Basic " + authToken;
     }
     return headers;
+}
+
+function isLoopbackIp(ip) {
+    return !ip || ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
 }
 
 // ============================================================
@@ -88,6 +93,12 @@ function updateUserDisplay() {
 }
 document.getElementById("myName").addEventListener("input", updateUserDisplay);
 
+function updateDirectSubtitle() {
+    document.getElementById("chatSubtitle").textContent = selectedPeer
+        ? `Direct message to ${selectedPeer.username}`
+        : "Select a peer from Active Peers";
+}
+
 // ============================================================
 // VIEW SWITCHING
 // ============================================================
@@ -100,8 +111,7 @@ function switchView(view) {
     if (target) target.classList.add("active");
 
     document.getElementById("chatTitle").textContent = "All Messages";
-    document.getElementById("chatSubtitle").textContent =
-        "Direct & Broadcast messages";
+    updateDirectSubtitle();
     document.getElementById("sendBtn").textContent = "➤ Send Direct";
     document.getElementById("broadcastBtn").style.display = "";
     document.getElementById("connectBtn").style.display = "";
@@ -186,6 +196,22 @@ async function getPeerList() {
             knownPeers[p.username] = { ip: p.ip, port: p.port };
         });
 
+        if (selectedPeer) {
+            const currentSelection = knownPeers[selectedPeer.username];
+            if (currentSelection) {
+                selectedPeer = {
+                    username: selectedPeer.username,
+                    ip: currentSelection.ip,
+                    port: currentSelection.port,
+                };
+            } else {
+                selectedPeer = null;
+                if (currentView === "direct") {
+                    updateDirectSubtitle();
+                }
+            }
+        }
+
         // Sync into own server so /send-peer can route messages
         const myName = document.getElementById("myName").value;
         const syncRequests = [];
@@ -219,6 +245,22 @@ async function getPeerList() {
     }
 }
 
+function selectPeer(username) {
+    const info = knownPeers[username];
+    if (!info) return;
+
+    selectedPeer = {
+        username,
+        ip: info.ip,
+        port: info.port,
+    };
+    renderPeerList();
+    if (currentView === "direct") {
+        updateDirectSubtitle();
+    }
+    showToast(`Selected ${username} (${info.ip}:${info.port})`);
+}
+
 function renderPeerList() {
     const container = document.getElementById("peerListDisplay");
     const myName = document.getElementById("myName").value;
@@ -234,12 +276,12 @@ function renderPeerList() {
         const color = getPeerColor(name);
         const isSelf = name === myName;
         const item = document.createElement("div");
-        item.className = "peer-item";
+        item.className =
+            "peer-item" +
+            (selectedPeer && selectedPeer.username === name ? " selected" : "");
         item.addEventListener("click", () => {
             if (!isSelf) {
-                document.getElementById("targetIp").value = info.ip;
-                document.getElementById("targetPort").value = info.port;
-                showToast(`Target set to ${name} (${info.ip}:${info.port})`);
+                selectPeer(name);
             }
         });
         item.innerHTML = `
@@ -262,8 +304,13 @@ function renderPeerList() {
  * Returns peer_alive: true/false.
  */
 async function connectPeer() {
-    const targetIp = document.getElementById("targetIp").value;
-    const targetPort = document.getElementById("targetPort").value;
+    if (!selectedPeer) {
+        showToast("Select a peer first.");
+        return;
+    }
+
+    const targetIp = selectedPeer.ip;
+    const targetPort = selectedPeer.port;
 
     try {
         const res = await fetch(`${getMyBaseUrl()}/connect-peer`, {
@@ -309,16 +356,10 @@ async function sendMessage() {
     const myName = document.getElementById("myName").value;
 
     if (currentView === "direct") {
-        // Determine the target peer name from dropdown / peer list
-        const targetPort = document.getElementById("targetPort").value;
-        let toName = "";
-        for (const [name, info] of Object.entries(knownPeers)) {
-            if (String(info.port) === String(targetPort)) {
-                toName = name;
-                break;
-            }
+        if (!selectedPeer) {
+            showToast("Select a peer from Active Peers first.");
+            return;
         }
-        if (!toName) toName = "peer"; // fallback
 
         try {
             const res = await fetch(`${getMyBaseUrl()}/send-peer`, {
@@ -327,10 +368,10 @@ async function sendMessage() {
                 // 'msg' matches our backend API (not 'message')
                 body: JSON.stringify({
                     from: myName,
-                    to: toName,
+                    to: selectedPeer.username,
                     msg: msgText,
-                    ip: document.getElementById("targetIp").value,
-                    port: targetPort,
+                    ip: selectedPeer.ip,
+                    port: selectedPeer.port,
                 }),
                 credentials: "include",
             });
@@ -758,7 +799,6 @@ function autoConfigure() {
     const host = window.location.hostname || "127.0.0.1";
     const trackerIp = params.get("trackerIp") || params.get("tracker") || host;
     const myIp = params.get("peerIp") || params.get("myIp") || "127.0.0.1";
-    const targetIp = params.get("targetIp") || trackerIp;
     const apiBase = params.get("apiBase") || params.get("trackerBase");
     const configuredUsername = params.get("username") || params.get("user");
     trackerApiBase = apiBase
@@ -770,9 +810,6 @@ function autoConfigure() {
     document.getElementById("trackerPort").value =
         params.get("trackerPort") || window.location.port || "8080";
     document.getElementById("trackerIp").value = trackerIp;
-    document.getElementById("targetIp").value = targetIp;
-    document.getElementById("targetPort").value =
-        params.get("targetPort") || "8000";
 
     if (configuredUsername) {
         document.getElementById("loginUsername").value = configuredUsername;
@@ -791,13 +828,36 @@ async function loadClientInfo() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("peerIp") || params.get("myIp")) return;
 
+    const trackerHost = document.getElementById("trackerIp").value.trim();
+    const trackerPort = document.getElementById("trackerPort").value.trim();
+
+    try {
+        const res = await fetch(`${getLoopbackBackendUrl()}/local-info`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                target_host: trackerHost,
+                target_port: trackerPort,
+            }),
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.local_ip && !isLoopbackIp(data.local_ip)) {
+                document.getElementById("myIp").value = data.local_ip;
+                return;
+            }
+        }
+    } catch (e) {
+        // Fall back to the proxy-observed client address below.
+    }
+
     try {
         const res = await fetch(`${getTrackerUrl()}/client-info`, {
             credentials: "include",
         });
         if (!res.ok) return;
         const data = await res.json();
-        if (data.client_ip) {
+        if (data.client_ip && !isLoopbackIp(data.client_ip)) {
             document.getElementById("myIp").value = data.client_ip;
         }
     } catch (e) {
