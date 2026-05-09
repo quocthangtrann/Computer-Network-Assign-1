@@ -90,6 +90,13 @@ function isLoopbackIp(ip) {
     return !ip || ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
 }
 
+function requireAuthenticated(message = "Please log in first.") {
+    if (isAuthenticated) return true;
+    showToast(message);
+    renderSignedOutState();
+    return false;
+}
+
 // ============================================================
 // UI HELPERS
 // ============================================================
@@ -131,10 +138,53 @@ function updateDirectSubtitle() {
         "Direct & Broadcast messages";
 }
 
+function resetChannelSidebar() {
+    joinedChannels = ["general"];
+    document.querySelectorAll("#channelList [data-channel]").forEach((item) => {
+        if (item.dataset.channel === "general") {
+            item.className = "channel-item";
+        } else {
+            item.remove();
+        }
+    });
+}
+
+function renderSignedOutState() {
+    currentView = "direct";
+    currentDirectPeer = null;
+    selectedPeer = null;
+    knownPeers = {};
+    resetHistoryMemory();
+    resetChannelSidebar();
+
+    document
+        .querySelectorAll(".channel-item")
+        .forEach((el) => el.classList.remove("active"));
+    const directTab = document.querySelector('[data-view="direct"]');
+    if (directTab) directTab.classList.add("active");
+
+    document.getElementById("chatTitle").textContent = "All Messages";
+    document.getElementById("chatSubtitle").textContent =
+        "Authentication required";
+    document.getElementById("sendBtn").textContent = "➤ Send Direct";
+    document.getElementById("broadcastBtn").style.display = "";
+    document.getElementById("connectBtn").style.display = "";
+    document.getElementById("messageInput").value = "";
+    document.getElementById("chatMessages").innerHTML =
+        '<div class="msg-system">Log in to view chat history and message peers.</div>';
+    document.getElementById("peerListDisplay").innerHTML =
+        '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">Log in to discover active peers.</div>';
+    document.getElementById("notificationBadge").classList.remove("show");
+    document.getElementById("userStatusSidebar").textContent = "Not registered";
+    setStatus("Not logged in", "offline");
+}
+
 // ============================================================
 // VIEW SWITCHING
 // ============================================================
 function switchView(view) {
+    if (!requireAuthenticated()) return;
+
     currentView = view;
     if (view === "direct") {
         currentDirectPeer = null;
@@ -155,6 +205,8 @@ function switchView(view) {
 }
 
 function switchDirectConversation(username) {
+    if (!requireAuthenticated()) return;
+
     currentView = "direct";
     currentDirectPeer = username;
     document
@@ -187,6 +239,8 @@ function switchDirectConversation(username) {
 }
 
 function switchChannel(channelName) {
+    if (!requireAuthenticated()) return;
+
     currentView = channelName;
     document
         .querySelectorAll(".channel-item")
@@ -214,6 +268,9 @@ function switchChannel(channelName) {
  * API endpoint: POST /api/submit-info  {username, ip, port}
  */
 async function registerPeer() {
+    if (!requireAuthenticated("Log in before registering with the tracker."))
+        return;
+
     const myName = document.getElementById("myName").value;
     const myPort = document.getElementById("myPort").value;
     const payload = JSON.stringify({
@@ -250,6 +307,12 @@ async function registerPeer() {
  * API: GET /get-list  → {status, peers: [{username, ip, port}], count}
  */
 async function getPeerList(showFeedback = true) {
+    if (!isAuthenticated) {
+        renderSignedOutState();
+        if (showFeedback) showToast("Log in before discovering peers.");
+        return;
+    }
+
     try {
         const res = await fetch(`${getTrackerUrl()}/get-list`, {
             headers: authHeaders(),
@@ -374,6 +437,8 @@ function renderPeerList() {
  * Returns peer_alive: true/false.
  */
 async function connectPeer() {
+    if (!requireAuthenticated("Log in before handshaking with peers.")) return;
+
     if (!selectedPeer) {
         showToast("Select a peer first.");
         return;
@@ -416,6 +481,8 @@ let _sending = false;
  *  - In channel view: POST /broadcast-channel {channel, from, msg}
  */
 async function sendMessage() {
+    if (!requireAuthenticated("Log in before sending messages.")) return;
+
     if (_sending) return;
     _sending = true;
     setTimeout(() => (_sending = false), 500);
@@ -504,6 +571,8 @@ async function sendMessage() {
  * My server fans out to known peers and skips the sender.
  */
 async function sendBroadcastMsg() {
+    if (!requireAuthenticated("Log in before broadcasting messages.")) return;
+
     const msgText = document.getElementById("messageInput").value.trim();
     if (!msgText) return;
 
@@ -923,6 +992,8 @@ function normalizeChannelName(rawName) {
 }
 
 function openCreateChannelModal() {
+    if (!requireAuthenticated("Log in before creating channels.")) return;
+
     document.getElementById("channelModal").classList.add("show");
     document.getElementById("newChannelName").focus();
 }
@@ -932,6 +1003,8 @@ function closeModal() {
 }
 
 async function createChannel() {
+    if (!requireAuthenticated("Log in before creating channels.")) return;
+
     const name = normalizeChannelName(
         document.getElementById("newChannelName").value,
     );
@@ -1061,6 +1134,8 @@ function addChannelToSidebar(name) {
 }
 
 async function syncChannels() {
+    if (!isAuthenticated) return;
+
     const endpoints = [getTrackerUrl(), getMyBaseUrl()];
     const names = new Set(["general"]);
     let successfulSyncs = 0;
@@ -1108,6 +1183,8 @@ function peerPayloadList() {
 }
 
 async function updateTrackerChannel(endpoint, method, body) {
+    if (!isAuthenticated) return;
+
     return fetch(`${getTrackerUrl()}/${endpoint}`, {
         method,
         headers: authHeaders({ "Content-Type": "application/json" }),
@@ -1117,6 +1194,8 @@ async function updateTrackerChannel(endpoint, method, body) {
 }
 
 async function renameChannel(oldName) {
+    if (!requireAuthenticated("Log in before renaming channels.")) return;
+
     if (oldName === "general") return;
 
     const rawName = prompt("Rename channel", oldName);
@@ -1183,6 +1262,8 @@ async function renameChannel(oldName) {
 }
 
 async function deleteChannel(name) {
+    if (!requireAuthenticated("Log in before deleting channels.")) return;
+
     if (name === "general") return;
     if (
         !confirm(`Delete #${name}? Messages in this channel will be removed.`)
@@ -1393,16 +1474,29 @@ async function restoreSavedSession() {
     }
 }
 
-function logoutUser() {
+async function logoutUser() {
+    const logoutUrls = Array.from(new Set([getTrackerUrl(), getMyBaseUrl()]));
+    await Promise.all(
+        logoutUrls.map((baseUrl) =>
+            fetch(`${baseUrl}/logout`, {
+                method: "POST",
+                headers: authHeaders(),
+                credentials: "include",
+            }).catch(() => {}),
+        ),
+    );
+
     isAuthenticated = false;
     authToken = "";
-    resetHistoryMemory();
     historyReadyForOwner = "";
     localStorage.removeItem("chat_auth");
     document.getElementById("authStatus").textContent = "Not logged in";
     document.getElementById("loginBtn").textContent = "Login";
     document.getElementById("myName").disabled = true;
     document.getElementById("myName").value = "";
+    closeLoginModal();
+    closeModal();
+    renderSignedOutState();
     updateUserDisplay();
     showToast("Logged out.");
 }
@@ -1553,7 +1647,11 @@ async function bootstrap() {
     autoConfigure();
     await loadClientInfo();
     await restoreSavedSession();
-    await syncChannels();
+    if (isAuthenticated) {
+        await syncChannels();
+    } else {
+        renderSignedOutState();
+    }
 }
 
 bootstrap();

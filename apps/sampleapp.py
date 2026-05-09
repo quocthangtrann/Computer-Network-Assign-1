@@ -113,6 +113,11 @@ def generate_session_token():
 
 def validate_session(headers):
 
+    token = get_session_token(headers)
+    return sessions.get(token, None)
+
+
+def get_session_token(headers):
     cookie_str = headers.get("cookie", "")
     cookies = {}
     for pair in cookie_str.split(";"):
@@ -120,8 +125,7 @@ def validate_session(headers):
         if "=" in pair:
             k, v = pair.split("=", 1)
             cookies[k.strip()] = v.strip()
-    token = cookies.get("sessionid", "")
-    return sessions.get(token, None)
+    return cookies.get("sessionid", "")
 
 
 def validate_basic_auth(headers):
@@ -156,6 +160,27 @@ def unauthorized_result():
             "__status__": 401,
         }
     ).encode("utf-8")
+
+
+def remove_user_presence(username):
+    if not username:
+        return 0
+
+    removed = 0
+    before_count = len(peer_list)
+    peer_list[:] = [p for p in peer_list if p.get("username") != username]
+    removed += before_count - len(peer_list)
+
+    for channel_name in list(channels.keys()):
+        before_members = len(channels[channel_name])
+        channels[channel_name] = [
+            p for p in channels[channel_name] if p.get("username") != username
+        ]
+        removed += before_members - len(channels[channel_name])
+        if channel_name != "general" and not channels[channel_name]:
+            del channels[channel_name]
+
+    return removed
 
 
 # P2P message helper
@@ -211,7 +236,9 @@ def normalize_channel_name(name):
     return name
 
 
-def announce_channel_event(event_type, channel_name, username, member, peers, extra=None):
+def announce_channel_event(
+    event_type, channel_name, username, member, peers, extra=None
+):
     targets = [
         p
         for p in peers
@@ -303,6 +330,36 @@ def login(headers="guest", body="anonymous"):
             "__status__": 401,
         }
         return json.dumps(result).encode("utf-8")
+
+
+@app.route("/logout", methods=["POST", "DELETE"])
+def logout(headers="guest", body="anonymous"):
+    token = get_session_token(headers)
+    username = None
+
+    with _lock:
+        if token:
+            username = sessions.pop(token, None)
+
+        if not username:
+            username = validate_basic_auth(headers)
+
+        removed_presence = remove_user_presence(username)
+
+    result = {
+        "status": "ok",
+        "message": "Logged out",
+        "username": username,
+        "removed_presence": removed_presence,
+        "__set_cookie__": "sessionid=; Max-Age=0; Path=/; HttpOnly",
+    }
+    print(
+        "[SampleApp] Logout for {} removed {} presence record(s)".format(
+            username or "unknown",
+            removed_presence,
+        )
+    )
+    return json.dumps(result).encode("utf-8")
 
 
 # Task 2.2 — Hello: protected route (cookie OR Basic Auth)
@@ -424,6 +481,8 @@ def submit_info(headers="guest", body="anonymous"):
 @app.route("/get-list", methods=["GET"])
 def get_list(headers="guest", body="anonymous"):
     # Return the list of all registered peers (Task 2.3 — Initialization Phase).
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] get_list called, {} peers".format(len(peer_list)))
     result = {
@@ -775,7 +834,9 @@ def create_channel(headers="guest", body="anonymous"):
         if username:
             members[:] = [m for m in members if m.get("username") != username]
             members.append(member)
-        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+        source_peers = (
+            request_peers if isinstance(request_peers, list) else list(peer_list)
+        )
 
     delivered = []
     failed = []
@@ -844,7 +905,9 @@ def rename_channel(headers="guest", body="anonymous"):
                 if msg.get("to") == old_name:
                     msg["to"] = new_name
 
-        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+        source_peers = (
+            request_peers if isinstance(request_peers, list) else list(peer_list)
+        )
 
     delivered = []
     failed = []
@@ -900,7 +963,9 @@ def delete_channel(headers="guest", body="anonymous"):
             for m in messages
             if not (m.get("type") == "channel" and m.get("channel") == channel_name)
         ]
-        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+        source_peers = (
+            request_peers if isinstance(request_peers, list) else list(peer_list)
+        )
 
     delivered = []
     failed = []
@@ -972,9 +1037,7 @@ def receive_channel(headers="guest", body="anonymous"):
             messages[:] = [
                 m
                 for m in messages
-                if not (
-                    m.get("type") == "channel" and m.get("channel") == channel_name
-                )
+                if not (m.get("type") == "channel" and m.get("channel") == channel_name)
             ]
         result = {
             "status": "ok",
@@ -1185,6 +1248,7 @@ def receive_message(headers="guest", body="anonymous"):
 
 TRACKER_ROUTE_PATHS = {
     "/login",
+    "/logout",
     "/hello",
     "/echo",
     "/client-info",
@@ -1198,6 +1262,7 @@ TRACKER_ROUTE_PATHS = {
 
 PEER_ROUTE_PATHS = {
     "/login",
+    "/logout",
     "/hello",
     "/echo",
     "/local-info",
