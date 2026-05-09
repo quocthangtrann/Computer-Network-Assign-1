@@ -199,12 +199,12 @@ class HttpAdapter:
                     _loop = asyncio.new_event_loop()
                     try:
                         result = _loop.run_until_complete(
-                            req.hook(req.headers, req.body)
+                            req.hook(req)
                         )
                     finally:
                         _loop.close()
                 else:
-                    result = req.hook(req.headers, req.body)
+                    result = req.hook(req)
             except Exception as e:
                 print("[HttpAdapter] Handler error: {}".format(e))
                 result = json.dumps({"error": str(e)}).encode("utf-8")
@@ -289,21 +289,37 @@ class HttpAdapter:
             print("[HttpAdapter] Async dispatching hook {} {}".format(req.method, req.path))
             try:
                 if inspect.iscoroutinefunction(req.hook):
-                    result = await req.hook(req.headers, req.body)
+                    result = await req.hook(req)
                 else:
-                    result = req.hook(req.headers, req.body)
+                    result = req.hook(req)
             except Exception as e:
                 print("[HttpAdapter] Async handler error: {}".format(e))
                 result = json.dumps({"error": str(e)}).encode("utf-8")
 
-            if isinstance(result, dict) and result.get("__status__") == 401:
-                response_bytes = resp.build_unauthorized()
+            if isinstance(result, str):
+                result = result.encode("utf-8")
+            elif not isinstance(result, bytes):
+                result = json.dumps(result).encode("utf-8")
+
+            extra_headers = self.add_headers(req) or {}
+            try:
+                payload = json.loads(result.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            http_status = payload.pop("__status__", 200)
+            set_cookie  = payload.pop("__set_cookie__", None)
+
+            if set_cookie:
+                extra_headers["Set-Cookie"] = set_cookie
+
+            if http_status == 401:
+                response_bytes = resp.build_unauthorized(extra_headers=extra_headers)
             else:
-                if isinstance(result, str):
-                    result = result.encode("utf-8")
-                elif not isinstance(result, bytes):
-                    result = json.dumps(result).encode("utf-8")
-                response_bytes = resp.build_json_response(result)
+                clean_result = json.dumps(payload).encode("utf-8") if payload else result
+                response_bytes = resp.build_json_response(
+                    clean_result, status=http_status, extra_headers=extra_headers
+                )
         else:
             # Build static file response
             response_bytes = resp.build_response(req)

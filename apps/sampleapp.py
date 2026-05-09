@@ -111,45 +111,31 @@ def generate_session_token():
     return uuid.uuid4().hex
 
 
-def validate_session(headers):
+def validate_session(req):
 
-    token = get_session_token(headers)
+    token = get_session_token(req)
     return sessions.get(token, None)
 
 
-def get_session_token(headers):
-    cookie_str = headers.get("cookie", "")
-    cookies = {}
-    for pair in cookie_str.split(";"):
-        pair = pair.strip()
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-            cookies[k.strip()] = v.strip()
-    return cookies.get("sessionid", "")
+def get_session_token(req):
+    return req.cookies.get("sessionid", "")
 
 
-def validate_basic_auth(headers):
+def validate_basic_auth(req):
 
-    auth_header = headers.get("authorization", "")
-    if not auth_header.lower().startswith("basic "):
-        return None
-    try:
-        encoded = auth_header[6:]
-        decoded = base64.b64decode(encoded).decode("utf-8")
-        username, password = decoded.split(":", 1)
+    if req.auth:
+        username, password = req.auth
         if USERS.get(username) == password:
             return username
-    except Exception:
-        pass
     return None
 
 
-def require_auth(headers):
+def require_auth(req):
 
-    user = validate_session(headers)
+    user = validate_session(req)
     if user:
         return user
-    return validate_basic_auth(headers)
+    return validate_basic_auth(req)
 
 
 def unauthorized_result():
@@ -292,14 +278,14 @@ app = AsynapRous()
 
 
 @app.route("/login", methods=["PUT", "POST"])
-def login(headers="guest", body="anonymous"):
+def login(req):
     # Handle user login and issue a session cookie (Task 2.2).
 
-    print("[SampleApp] Logging in {} to {}".format(headers, body))
+    print("[SampleApp] Logging in {} to {}".format(req.headers, req.body))
 
     # Parse JSON body
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -333,8 +319,8 @@ def login(headers="guest", body="anonymous"):
 
 
 @app.route("/logout", methods=["POST", "DELETE"])
-def logout(headers="guest", body="anonymous"):
-    token = get_session_token(headers)
+def logout(req):
+    token = get_session_token(req)
     username = None
 
     with _lock:
@@ -342,7 +328,7 @@ def logout(headers="guest", body="anonymous"):
             username = sessions.pop(token, None)
 
         if not username:
-            username = validate_basic_auth(headers)
+            username = validate_basic_auth(req)
 
         removed_presence = remove_user_presence(username)
 
@@ -366,10 +352,10 @@ def logout(headers="guest", body="anonymous"):
 
 
 @app.route("/hello", methods=["POST", "PUT", "GET"])
-def hello(headers="guest", body="anonymous"):
+def hello(req):
     # Access a protected route using session cookie or Basic Auth (Task 2.2).
 
-    user = require_auth(headers)
+    user = require_auth(req)
     if not user:
         print("[SampleApp] Unauthenticated access to /hello — returning 401")
         # Return 401 sentinel; HttpAdapter will send WWW-Authenticate header
@@ -393,7 +379,7 @@ def hello(headers="guest", body="anonymous"):
 
 
 @app.route("/echo", methods=["POST"])
-def echo(headers="guest", body="anonymous"):
+def echo(req):
     """Echo the request body back as JSON (development/testing helper).
 
     :param headers: HTTP headers.
@@ -402,7 +388,7 @@ def echo(headers="guest", body="anonymous"):
     """
     print("[SampleApp] received body {}".format(body))
     try:
-        message = json.loads(body)
+        message = json.loads(req.body)
         data = {"status": "ok", "received": message}
     except json.JSONDecodeError:
         data = {"status": "error", "error": "Invalid JSON"}
@@ -410,9 +396,9 @@ def echo(headers="guest", body="anonymous"):
 
 
 @app.route("/client-info", methods=["GET"])
-def client_info(headers="guest", body="anonymous"):
-    forwarded_for = headers.get("x-forwarded-for", "")
-    real_ip = headers.get("x-real-ip", "")
+def client_info(req):
+    forwarded_for = req.headers.get("x-forwarded-for", "")
+    real_ip = req.headers.get("x-real-ip", "")
     client_ip = forwarded_for.split(",", 1)[0].strip() or real_ip.strip()
     result = {
         "status": "ok",
@@ -422,9 +408,9 @@ def client_info(headers="guest", body="anonymous"):
 
 
 @app.route("/local-info", methods=["POST", "GET"])
-def local_info(headers="guest", body="anonymous"):
+def local_info(req):
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -442,14 +428,14 @@ def local_info(headers="guest", body="anonymous"):
 
 
 @app.route("/submit-info", methods=["POST"])
-def submit_info(headers="guest", body="anonymous"):
+def submit_info(req):
     # Register a peer's network information with the tracker (Task 2.3).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] submit_info body={}".format(body))
+    print("[SampleApp] submit_info req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -479,9 +465,9 @@ def submit_info(headers="guest", body="anonymous"):
 
 
 @app.route("/get-list", methods=["GET"])
-def get_list(headers="guest", body="anonymous"):
+def get_list(req):
     # Return the list of all registered peers (Task 2.3 — Initialization Phase).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
     print("[SampleApp] get_list called, {} peers".format(len(peer_list)))
@@ -494,14 +480,14 @@ def get_list(headers="guest", body="anonymous"):
 
 
 @app.route("/add-list", methods=["POST"])
-def add_list(headers="guest", body="anonymous"):
+def add_list(req):
     # Add a peer entry to the registry (Task 2.3).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] add_list body={}".format(body))
+    print("[SampleApp] add_list req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -523,14 +509,14 @@ def add_list(headers="guest", body="anonymous"):
 
 
 @app.route("/connect-peer", methods=["POST"])
-def connect_peer(headers="guest", body="anonymous"):
+def connect_peer(req):
     # Connect to a remote peer and check if it is reachable (Task 2.3).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] connect_peer body={}".format(body))
+    print("[SampleApp] connect_peer req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -577,7 +563,7 @@ def connect_peer(headers="guest", body="anonymous"):
 
 
 @app.route("/peer-info", methods=["GET"])
-def peer_info(headers="guest", body="anonymous"):
+def peer_info(req):
     result = {
         "status": "ok",
         "peer": {
@@ -588,14 +574,14 @@ def peer_info(headers="guest", body="anonymous"):
 
 
 @app.route("/send-peer", methods=["POST"])
-def send_peer(headers="guest", body="anonymous"):
+def send_peer(req):
     # Send a direct message to a specific peer (Task 2.3 — Chat Phase).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] send_peer body={}".format(body))
+    print("[SampleApp] send_peer req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -669,7 +655,7 @@ def send_peer(headers="guest", body="anonymous"):
 
 
 @app.route("/broadcast-peer", methods=["POST"])
-def broadcast_peer(headers="guest", body="anonymous"):
+def broadcast_peer(req):
     """Broadcast a message to ALL known peers (Task 2.3 — Chat Phase).
 
     Fan-out: iterates the peer_list and calls send_to_peer for each one.
@@ -681,12 +667,12 @@ def broadcast_peer(headers="guest", body="anonymous"):
     :param body: JSON body.
     :returns (bytes): JSON summary of delivery attempts.
     """
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] broadcast_peer body={}".format(body))
+    print("[SampleApp] broadcast_peer req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -765,9 +751,9 @@ def broadcast_peer(headers="guest", body="anonymous"):
 
 
 @app.route("/get-messages", methods=["GET"])
-def get_messages(headers="guest", body="anonymous"):
+def get_messages(req):
 
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
     print("[SampleApp] get_messages called")
@@ -787,7 +773,7 @@ def get_messages(headers="guest", body="anonymous"):
 
 
 @app.route("/get-channels", methods=["GET"])
-def get_channels(headers="guest", body="anonymous"):
+def get_channels(req):
     # Return all available channels and their member lists (Task 2.3).
 
     print("[SampleApp] get_channels called")
@@ -804,15 +790,15 @@ def get_channels(headers="guest", body="anonymous"):
 
 
 @app.route("/create-channel", methods=["POST"])
-def create_channel(headers="guest", body="anonymous"):
+def create_channel(req):
     # Register a channel and optionally announce it to known peers.
-    auth_user = require_auth(headers)
+    auth_user = require_auth(req)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] create_channel body={}".format(body))
+    print("[SampleApp] create_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -860,14 +846,14 @@ def create_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/rename-channel", methods=["POST"])
-def rename_channel(headers="guest", body="anonymous"):
-    auth_user = require_auth(headers)
+def rename_channel(req):
+    auth_user = require_auth(req)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] rename_channel body={}".format(body))
+    print("[SampleApp] rename_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -932,14 +918,14 @@ def rename_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/delete-channel", methods=["DELETE", "POST"])
-def delete_channel(headers="guest", body="anonymous"):
-    auth_user = require_auth(headers)
+def delete_channel(req):
+    auth_user = require_auth(req)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] delete_channel body={}".format(body))
+    print("[SampleApp] delete_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -988,11 +974,11 @@ def delete_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/receive-channel", methods=["POST"])
-def receive_channel(headers="guest", body="anonymous"):
+def receive_channel(req):
     # Receive a P2P channel-created event from another peer.
-    print("[SampleApp] receive_channel body={}".format(body))
+    print("[SampleApp] receive_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -1069,14 +1055,14 @@ def receive_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/get-channel-messages", methods=["POST"])
-def get_channel_messages(headers="guest", body="anonymous"):
+def get_channel_messages(req):
     # Return messages belonging to a specific channel (Task 2.3).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] get_channel_messages body={}".format(body))
+    print("[SampleApp] get_channel_messages req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -1102,14 +1088,14 @@ def get_channel_messages(headers="guest", body="anonymous"):
 
 
 @app.route("/broadcast-channel", methods=["POST"])
-def broadcast_channel(headers="guest", body="anonymous"):
+def broadcast_channel(req):
     # Broadcast a message to all peers in a specific channel (Task 2.3).
-    if not require_auth(headers):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] broadcast_channel body={}".format(body))
+    print("[SampleApp] broadcast_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -1181,13 +1167,13 @@ def broadcast_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/leave-channel", methods=["DELETE"])
-def leave_channel(headers="guest", body="anonymous"):
-    if not require_auth(headers):
+def leave_channel(req):
+    if not require_auth(req):
         return unauthorized_result()
 
-    print("[SampleApp] leave_channel body={}".format(body))
+    print("[SampleApp] leave_channel req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
@@ -1213,11 +1199,11 @@ def leave_channel(headers="guest", body="anonymous"):
 
 
 @app.route("/receive-message", methods=["POST"])
-def receive_message(headers="guest", body="anonymous"):
+def receive_message(req):
 
-    print("[SampleApp] receive_message body={}".format(body))
+    print("[SampleApp] receive_message req.body={}".format(body))
     try:
-        data = json.loads(body) if body else {}
+        data = json.loads(req.body) if req.body else {}
     except Exception:
         data = {}
 
