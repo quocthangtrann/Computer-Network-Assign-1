@@ -29,40 +29,72 @@ from daemon import AsynapRous
 # ---------------------------------------------------------------------------
 
 # Shared state file — both backend 9000 and 9001 read/write this
-STATE_FILE = os.path.join(os.path.dirname(__file__), '..', 'db', 'chat_state.json')
+STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "db", "chat_state.json")
 
 # User credentials file
-USERS_FILE = os.path.join(os.path.dirname(__file__), '..', 'db', 'users.json')
+USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "db", "users.json")
 
 # Heartbeat timeout — peers not seen within this window are evicted
 PEER_TIMEOUT_SECONDS = 120
+
+# Keep enough transcript to survive browser refreshes without letting the
+# shared JSON state grow forever.
+MAX_MESSAGE_HISTORY = 200
 
 # ---------------------------------------------------------------------------
 # File-based shared state utilities (cross-process safe)
 # ---------------------------------------------------------------------------
 
+
+def _default_state():
+    return {
+        "active_peers": {},
+        "message_queues": {},
+        "message_history": {},
+        "sessions": {},
+    }
+
+
+def _ensure_state_shape(state):
+    state.setdefault("active_peers", {})
+    state.setdefault("message_queues", {})
+    state.setdefault("message_history", {})
+    state.setdefault("sessions", {})
+    return state
+
+
+def _append_history(state, username, message_entry):
+    state.setdefault("message_history", {})
+    state["message_history"].setdefault(username, [])
+    state["message_history"][username].append(message_entry)
+    if len(state["message_history"][username]) > MAX_MESSAGE_HISTORY:
+        state["message_history"][username] = state["message_history"][username][
+            -MAX_MESSAGE_HISTORY:
+        ]
+
+
 def _read_state():
     # Read the shared state from db/chat_state.json.
 
-    default = {"active_peers": {}, "message_queues": {}, "sessions": {}}
+    default = _default_state()
     try:
-        with open(STATE_FILE, 'r') as f:
+        with open(STATE_FILE, "r") as f:
             fcntl.flock(f, fcntl.LOCK_SH)  # shared (read) lock
             content = f.read()
             fcntl.flock(f, fcntl.LOCK_UN)
             if not content.strip():
                 return default
-            return json.loads(content)
+            return _ensure_state_shape(json.loads(content))
     except (FileNotFoundError, json.JSONDecodeError):
         return default
 
 
 def _write_state(state):
-    #Write the shared state to db/chat_state.json atomically.
+    # Write the shared state to db/chat_state.json atomically.
 
     # Ensure db/ directory exists
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    with open(STATE_FILE, 'w') as f:
+    with open(STATE_FILE, "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)  # exclusive (write) lock
         json.dump(state, f, indent=2)
         f.flush()
@@ -83,17 +115,17 @@ def _read_modify_write(modifier_fn):
     :returns: Whatever modifier_fn returns.
     """
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    default = {"active_peers": {}, "message_queues": {}, "sessions": {}}
+    default = _default_state()
 
     # Open in r+ mode (read+write) to hold lock across read and write
     try:
-        with open(STATE_FILE, 'r+') as f:
+        with open(STATE_FILE, "r+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             content = f.read()
             if not content.strip():
                 state = default
             else:
-                state = json.loads(content)
+                state = _ensure_state_shape(json.loads(content))
 
             result = modifier_fn(state)
 
@@ -125,7 +157,11 @@ def _cleanup_stale_peers(state):
         del state["active_peers"][username]
         # Clean up their message queue
         state.get("message_queues", {}).pop(username, None)
-        print("[SampleApp] Evicted stale peer: {} (timeout {}s)".format(username, PEER_TIMEOUT_SECONDS))
+        print(
+            "[SampleApp] Evicted stale peer: {} (timeout {}s)".format(
+                username, PEER_TIMEOUT_SECONDS
+            )
+        )
 
     return stale
 
@@ -134,12 +170,14 @@ def _cleanup_stale_peers(state):
 # User credentials
 # ---------------------------------------------------------------------------
 
+
 def load_users():
     try:
-        with open(USERS_FILE, 'r') as f:
+        with open(USERS_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return {"admin": "admin123", "alice": "password1", "bob": "password2"}
+
 
 USERS = load_users()
 
@@ -148,6 +186,7 @@ USERS = load_users()
 # ---------------------------------------------------------------------------
 
 _virtual_ip_counter = 0
+
 
 def _assign_virtual_ip(username):
 
@@ -162,6 +201,7 @@ def _assign_virtual_ip(username):
 # Auth helpers (read sessions from shared state file)
 # ---------------------------------------------------------------------------
 
+
 def generate_session_token():
 
     return uuid.uuid4().hex
@@ -169,14 +209,14 @@ def generate_session_token():
 
 def validate_session(headers):
 
-    cookie_str = headers.get('cookie', '')
+    cookie_str = headers.get("cookie", "")
     cookies = {}
-    for pair in cookie_str.split(';'):
+    for pair in cookie_str.split(";"):
         pair = pair.strip()
-        if '=' in pair:
-            k, v = pair.split('=', 1)
+        if "=" in pair:
+            k, v = pair.split("=", 1)
             cookies[k.strip()] = v.strip()
-    token = cookies.get('sessionid', '')
+    token = cookies.get("sessionid", "")
     if not token:
         return None
 
@@ -186,13 +226,13 @@ def validate_session(headers):
 
 def validate_basic_auth(headers):
 
-    auth_header = headers.get('authorization', '')
-    if not auth_header.lower().startswith('basic '):
+    auth_header = headers.get("authorization", "")
+    if not auth_header.lower().startswith("basic "):
         return None
     try:
         encoded = auth_header[6:]
-        decoded = base64.b64decode(encoded).decode('utf-8')
-        username, password = decoded.split(':', 1)
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        username, password = decoded.split(":", 1)
         if USERS.get(username) == password:
             return username
     except Exception:
@@ -209,12 +249,13 @@ def require_auth(headers):
 
 
 def unauthorized_result():
-    return json.dumps({
-        "status": "error",
-        "message": "Authentication required",
-        "__status__": 401,
-    }).encode("utf-8")
-
+    return json.dumps(
+        {
+            "status": "error",
+            "message": "Authentication required",
+            "__status__": 401,
+        }
+    ).encode("utf-8")
 
 
 # AsynapRous application instance
@@ -223,7 +264,8 @@ app = AsynapRous()
 
 # Task 2.2 — Login: session cookie auth (RFC 6265)
 
-@app.route('/login', methods=['PUT', 'POST'])
+
+@app.route("/login", methods=["PUT", "POST"])
 def login(headers="guest", body="anonymous"):
 
     print("[SampleApp] Logging in {} to {}".format(headers, body))
@@ -243,6 +285,7 @@ def login(headers="guest", body="anonymous"):
         def _add_session(state):
             state.setdefault("sessions", {})
             state["sessions"][token] = username
+
         _read_modify_write(_add_session)
 
         result = {
@@ -262,10 +305,10 @@ def login(headers="guest", body="anonymous"):
         return json.dumps(result).encode("utf-8")
 
 
-
 # Task 2.2 — Hello: protected route (cookie OR Basic Auth)
 
-@app.route('/hello', methods=['POST', 'PUT', 'GET'])
+
+@app.route("/hello", methods=["POST", "PUT", "GET"])
 def hello(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -289,6 +332,7 @@ def hello(headers="guest", body="anonymous"):
 
 # Echo — development helper
 
+
 @app.route("/echo", methods=["POST"])
 def echo(headers="guest", body="anonymous"):
 
@@ -303,7 +347,8 @@ def echo(headers="guest", body="anonymous"):
 
 # Peer registration — Centralized Hub (replaces old P2P tracker)
 
-@app.route('/submit-info', methods=['POST'])
+
+@app.route("/submit-info", methods=["POST"])
 def submit_info(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -324,6 +369,7 @@ def submit_info(headers="guest", body="anonymous"):
     def _register(state):
         state.setdefault("active_peers", {})
         state.setdefault("message_queues", {})
+        state.setdefault("message_history", {})
         now = time.time()
         state["active_peers"][username] = {
             "virtual_ip": virtual_ip,
@@ -333,19 +379,22 @@ def submit_info(headers="guest", body="anonymous"):
         # Create message queue if not exists
         if username not in state["message_queues"]:
             state["message_queues"][username] = []
+        state["message_history"].setdefault(username, [])
 
     _read_modify_write(_register)
 
     print("[SampleApp] Registered peer: {} -> {}".format(username, virtual_ip))
     result = {
         "status": "ok",
-        "message": "Peer '{}' registered with Virtual IP {}".format(username, virtual_ip),
+        "message": "Peer '{}' registered with Virtual IP {}".format(
+            username, virtual_ip
+        ),
         "peer": {"username": username, "virtual_ip": virtual_ip},
     }
     return json.dumps(result).encode("utf-8")
 
 
-@app.route('/get-list', methods=['GET'])
+@app.route("/get-list", methods=["GET"])
 def get_list(headers="guest", body="anonymous"):
 
     # Clean up stale peers before returning the list
@@ -353,10 +402,12 @@ def get_list(headers="guest", body="anonymous"):
         _cleanup_stale_peers(state)
         peers = []
         for username, info in state.get("active_peers", {}).items():
-            peers.append({
-                "username": username,
-                "virtual_ip": info.get("virtual_ip", ""),
-            })
+            peers.append(
+                {
+                    "username": username,
+                    "virtual_ip": info.get("virtual_ip", ""),
+                }
+            )
         return peers
 
     peers = _read_modify_write(_get_and_clean)
@@ -370,9 +421,10 @@ def get_list(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
-# Chat Phase — Centralized Message Broker 
+# Chat Phase — Centralized Message Broker
 
-@app.route('/send-peer', methods=['POST'])
+
+@app.route("/send-peer", methods=["POST"])
 def send_peer(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -385,9 +437,9 @@ def send_peer(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    to_user  = data.get("to", "")
+    to_user = data.get("to", "")
     msg_text = data.get("msg", "")
-    sender   = data.get("from", user)
+    sender = data.get("from", user)
 
     if not to_user:
         result = {"status": "error", "message": "Missing 'to' field"}
@@ -398,6 +450,7 @@ def send_peer(headers="guest", body="anonymous"):
         return json.dumps(result).encode("utf-8")
 
     message_entry = {
+        "id": uuid.uuid4().hex,
         "from": sender,
         "to": to_user,
         "msg": msg_text,
@@ -416,10 +469,13 @@ def send_peer(headers="guest", body="anonymous"):
         # Append to target's queue
         state["message_queues"].setdefault(to_user, [])
         state["message_queues"][to_user].append(message_entry)
+        _append_history(state, to_user, message_entry)
 
         # Also append to sender's own queue so they see their sent message
         state["message_queues"].setdefault(sender, [])
         state["message_queues"][sender].append(message_entry)
+        if sender != to_user:
+            _append_history(state, sender, message_entry)
 
         return "ok"
 
@@ -437,7 +493,7 @@ def send_peer(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
-@app.route('/broadcast-peer', methods=['POST'])
+@app.route("/broadcast-peer", methods=["POST"])
 def broadcast_peer(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -451,13 +507,14 @@ def broadcast_peer(headers="guest", body="anonymous"):
         data = {}
 
     msg_text = data.get("msg", "")
-    sender   = data.get("from", user)
+    sender = data.get("from", user)
 
     if not msg_text:
         result = {"status": "error", "message": "Missing 'msg' field"}
         return json.dumps(result).encode("utf-8")
 
     message_entry = {
+        "id": uuid.uuid4().hex,
         "from": sender,
         "to": "broadcast",
         "msg": msg_text,
@@ -473,6 +530,7 @@ def broadcast_peer(headers="guest", body="anonymous"):
         for username in state["active_peers"]:
             state["message_queues"].setdefault(username, [])
             state["message_queues"][username].append(message_entry)
+            _append_history(state, username, message_entry)
             count += 1
         return count
 
@@ -486,9 +544,31 @@ def broadcast_peer(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
+# Message History — restore transcript after browser refresh
+
+
+@app.route("/message-history", methods=["GET"])
+def message_history(headers="guest", body="anonymous"):
+
+    user = require_auth(headers)
+    if not user:
+        return unauthorized_result()
+
+    state = _read_state()
+    messages = list(state.get("message_history", {}).get(user, []))
+
+    result = {
+        "status": "ok",
+        "messages": messages,
+        "count": len(messages),
+    }
+    return json.dumps(result).encode("utf-8")
+
+
 # Message Polling — AJAX short polling endpoint
 
-@app.route('/fetch-messages', methods=['GET'])
+
+@app.route("/fetch-messages", methods=["GET"])
 def fetch_messages(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -522,7 +602,8 @@ def fetch_messages(headers="guest", body="anonymous"):
 
 # Explicit Logout — remove peer, clear queue, delete session
 
-@app.route('/logout', methods=['POST'])
+
+@app.route("/logout", methods=["POST"])
 def logout(headers="guest", body="anonymous"):
 
     user = require_auth(headers)
@@ -530,13 +611,13 @@ def logout(headers="guest", body="anonymous"):
         return unauthorized_result()
 
     # Extract session token from cookie to delete it
-    cookie_str = headers.get('cookie', '') if hasattr(headers, 'get') else ''
-    session_token = ''
-    for pair in cookie_str.split(';'):
+    cookie_str = headers.get("cookie", "") if hasattr(headers, "get") else ""
+    session_token = ""
+    for pair in cookie_str.split(";"):
         pair = pair.strip()
-        if '=' in pair:
-            k, v = pair.split('=', 1)
-            if k.strip() == 'sessionid':
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            if k.strip() == "sessionid":
                 session_token = v.strip()
 
     def _remove_user(state):
@@ -560,6 +641,7 @@ def logout(headers="guest", body="anonymous"):
 
 
 # Entry point
+
 
 def create_sampleapp(ip, port, role=None):
 

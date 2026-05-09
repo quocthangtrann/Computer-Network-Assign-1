@@ -1,582 +1,834 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>HybridChat — Centralized P2P Messaging</title>
+        <meta
+            name="description"
+            content="Centralized Hub Chat with Application-Level P2P simulation"
+        />
+        <link rel="stylesheet" href="css/styles.css" />
+    </head>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HybridChat — Centralized P2P Messaging</title>
-    <meta name="description" content="Centralized Hub Chat with Application-Level P2P simulation">
-    <link rel="stylesheet" href="css/styles.css" />
-</head>
-
-<body>
-    <div class="app-layout" id="appLayout">
-
-        <!-- LEFT SIDEBAR — Navigation -->
-        <aside class="sidebar-left">
-            <div class="sidebar-header">
-                <div class="app-logo">
-                    <h1>Hybrid Chat</h1>
+    <body>
+        <div class="app-layout" id="appLayout">
+            <!-- LEFT SIDEBAR — Navigation -->
+            <aside class="sidebar-left">
+                <div class="sidebar-header">
+                    <div class="app-logo">
+                        <h1>Hybrid Chat</h1>
+                    </div>
+                    <div class="app-logo-subtitle">Centralized Hub</div>
                 </div>
-                <div class="app-logo-subtitle">Centralized Hub</div>
-            </div>
 
-            <div class="sidebar-section">
-                <div class="sidebar-section-title">Messages</div>
-            </div>
-            <ul class="channel-list" id="directMsgList">
-                <li class="channel-item active" data-view="direct" onclick="switchView('direct')">
-                    <svg class="menu-icon-heart" width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-light)">
-                        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-                    </svg>
-                    <span>All Messages</span>
-                </li>
-            </ul>
-
-            <!-- User Profile -->
-            <div class="user-profile">
-                <div class="user-avatar" id="userAvatarSidebar">?</div>
-                <div class="user-info">
-                    <div class="user-name" id="userNameSidebar">Guest</div>
-                    <div class="user-status" id="userStatusSidebar">Not logged in</div>
+                <div class="sidebar-section">
+                    <div class="sidebar-section-title">Messages</div>
                 </div>
-            </div>
-        </aside>
-
-        <!-- MAIN CHAT AREA -->
-        <main class="chat-main">
-            <div class="chat-header">
-                <div class="chat-header-info">
-                    <h2 id="chatTitle">All Messages</h2>
-                    <span id="chatSubtitle">Direct &amp; Broadcast messages</span>
-                </div>
-                <div id="notificationBadge" class="notification-badge">0 new</div>
-            </div>
-
-            <div class="chat-messages" id="chatMessages">
-                <div class="msg-system">Welcome to HybridChat! Login to start chatting.</div>
-            </div>
-
-            <div class="chat-input-area">
-                <div class="chat-input-row">
-                    <input type="text" class="chat-input" id="messageInput"
-                        placeholder="Type a message... (Enter to send)"
-                        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}">
-                </div>
-                <div class="send-btns">
-                    <!-- Target peer selector -->
-                    <select class="config-input" id="targetPeerSelect" style="max-width:160px;font-size:13px;padding:8px 10px;">
-                        <option value="">Select peer...</option>
-                    </select>
-                    <button class="btn btn-primary" onclick="sendMessage()" id="sendBtn">
-                        ➤ Send Direct
-                    </button>
-                    <button class="btn btn-accent" onclick="sendBroadcastMsg()" id="broadcastBtn">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
-                            <circle cx="12" cy="12" r="2"></circle>
-                            <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
+                <ul class="channel-list" id="directMsgList">
+                    <li
+                        class="channel-item active"
+                        data-view="direct"
+                        onclick="switchView('direct')"
+                    >
+                        <svg
+                            class="menu-icon-heart"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="var(--accent-light)"
+                        >
+                            <path
+                                d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                            />
                         </svg>
-                        Broadcast
-                    </button>
+                        <span>All Messages</span>
+                    </li>
+                </ul>
+
+                <!-- User Profile -->
+                <div class="user-profile">
+                    <div class="user-avatar" id="userAvatarSidebar">?</div>
+                    <div class="user-info">
+                        <div class="user-name" id="userNameSidebar">Guest</div>
+                        <div class="user-status" id="userStatusSidebar">
+                            Not logged in
+                        </div>
+                    </div>
                 </div>
-            </div>
-        </main>
+            </aside>
 
-        <!-- RIGHT SIDEBAR — Auth & Peers -->
-        <aside class="sidebar-right">
-            <div class="sidebar-right-header">
-                <h3>Connection Panel</h3>
-            </div>
-
-            <!-- Auth Section -->
-            <div class="config-section">
-                <h4>Authentication</h4>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn btn-primary btn-sm" style="flex:1" onclick="openLoginModal()" id="loginBtn">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
-                            <polyline points="10 17 15 12 10 7"></polyline>
-                            <line x1="15" y1="12" x2="3" y2="12"></line>
-                        </svg>
-                        Login
-                    </button>
-                    <button class="btn btn-secondary btn-sm" style="flex:1" onclick="logoutUser()" id="logoutBtn">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                            <polyline points="16 17 21 12 16 7"></polyline>
-                            <line x1="21" y1="12" x2="9" y2="12"></line>
-                        </svg>
-                        Logout
-                    </button>
+            <!-- MAIN CHAT AREA -->
+            <main class="chat-main">
+                <div class="chat-header">
+                    <div class="chat-header-info">
+                        <h2 id="chatTitle">All Messages</h2>
+                        <span id="chatSubtitle"
+                            >Direct &amp; Broadcast messages</span
+                        >
+                    </div>
+                    <div id="notificationBadge" class="notification-badge">
+                        0 new
+                    </div>
                 </div>
-                <div id="authStatus" style="font-size:11px;color:var(--text-muted);margin-top:6px;">Not logged in</div>
-            </div>
 
-            <!-- My Identity (read-only, auto-assigned) -->
-            <div class="config-section">
-                <h4>My Identity</h4>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="msg-system">
+                        Welcome to HybridChat! Login to start chatting.
+                    </div>
+                </div>
+
+                <div class="chat-input-area">
+                    <div class="chat-input-row">
+                        <input
+                            type="text"
+                            class="chat-input"
+                            id="messageInput"
+                            placeholder="Type a message... (Enter to send)"
+                            onkeydown="
+                                if (event.key === 'Enter' && !event.shiftKey) {
+                                    event.preventDefault();
+                                    sendMessage();
+                                }
+                            "
+                        />
+                    </div>
+                    <div class="send-btns">
+                        <!-- Target peer selector -->
+                        <select
+                            class="config-input"
+                            id="targetPeerSelect"
+                            style="
+                                max-width: 160px;
+                                font-size: 13px;
+                                padding: 8px 10px;
+                            "
+                        >
+                            <option value="">Select peer...</option>
+                        </select>
+                        <button
+                            class="btn btn-primary"
+                            onclick="sendMessage()"
+                            id="sendBtn"
+                        >
+                            ➤ Send Direct
+                        </button>
+                        <button
+                            class="btn btn-accent"
+                            onclick="sendBroadcastMsg()"
+                            id="broadcastBtn"
+                        >
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                style="margin-right: 4px"
+                            >
+                                <circle cx="12" cy="12" r="2"></circle>
+                                <path
+                                    d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"
+                                ></path>
+                            </svg>
+                            Broadcast
+                        </button>
+                    </div>
+                </div>
+            </main>
+
+            <!-- RIGHT SIDEBAR — Auth & Peers -->
+            <aside class="sidebar-right">
+                <div class="sidebar-right-header">
+                    <h3>Connection Panel</h3>
+                </div>
+
+                <!-- Auth Section -->
+                <div class="config-section">
+                    <h4>Authentication</h4>
+                    <div style="display: flex; gap: 6px">
+                        <button
+                            class="btn btn-primary btn-sm"
+                            style="flex: 1"
+                            onclick="openLoginModal()"
+                            id="loginBtn"
+                        >
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <path
+                                    d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"
+                                ></path>
+                                <polyline points="10 17 15 12 10 7"></polyline>
+                                <line x1="15" y1="12" x2="3" y2="12"></line>
+                            </svg>
+                            Login
+                        </button>
+                        <button
+                            class="btn btn-secondary btn-sm"
+                            style="flex: 1"
+                            onclick="logoutUser()"
+                            id="logoutBtn"
+                        >
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <path
+                                    d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"
+                                ></path>
+                                <polyline points="16 17 21 12 16 7"></polyline>
+                                <line x1="21" y1="12" x2="9" y2="12"></line>
+                            </svg>
+                            Logout
+                        </button>
+                    </div>
+                    <div
+                        id="authStatus"
+                        style="
+                            font-size: 11px;
+                            color: var(--text-muted);
+                            margin-top: 6px;
+                        "
+                    >
+                        Not logged in
+                    </div>
+                </div>
+
+                <!-- My Identity (read-only, auto-assigned) -->
+                <div class="config-section">
+                    <h4>My Identity</h4>
+                    <div class="config-group">
+                        <label class="config-label">Username</label>
+                        <input
+                            type="text"
+                            class="config-input"
+                            id="myName"
+                            value=""
+                            placeholder="Login required"
+                            disabled
+                        />
+                    </div>
+                    <div class="config-group">
+                        <label class="config-label"
+                            >Virtual IP (assigned)</label
+                        >
+                        <input
+                            type="text"
+                            class="config-input"
+                            id="myVirtualIp"
+                            value="—"
+                            disabled
+                            style="
+                                color: var(--accent-light);
+                                font-family: monospace;
+                            "
+                        />
+                    </div>
+                </div>
+
+                <!-- Active Peers -->
+                <div class="sidebar-section">
+                    <div class="sidebar-section-title">Active Peers</div>
+                </div>
+                <div class="peer-list" id="peerListDisplay">
+                    <div
+                        style="
+                            padding: 16px;
+                            text-align: center;
+                            color: var(--text-muted);
+                            font-size: 12px;
+                        "
+                    >
+                        No peers online yet.<br />Login to see active users.
+                    </div>
+                </div>
+
+                <!-- Status Bar -->
+                <div class="status-bar" id="statusBar">
+                    <div class="status-dot offline" id="statusDot"></div>
+                    <span id="statusText">Not connected</span>
+                </div>
+            </aside>
+        </div>
+
+        <!-- LOGIN MODAL -->
+        <div class="modal-overlay" id="loginModal">
+            <div class="modal">
+                <h3>Login</h3>
+                <p
+                    style="
+                        font-size: 12px;
+                        color: var(--text-secondary);
+                        margin-bottom: 14px;
+                    "
+                >
+                    Authenticate to join the chat hub
+                </p>
                 <div class="config-group">
                     <label class="config-label">Username</label>
-                    <input type="text" class="config-input" id="myName" value="" placeholder="Login required" disabled>
+                    <input
+                        type="text"
+                        class="config-input"
+                        id="loginUsername"
+                        value="admin"
+                        onkeydown="
+                            if (event.key === 'Enter')
+                                document
+                                    .getElementById('loginPassword')
+                                    .focus();
+                        "
+                    />
                 </div>
                 <div class="config-group">
-                    <label class="config-label">Virtual IP (assigned)</label>
-                    <input type="text" class="config-input" id="myVirtualIp" value="—" disabled
-                        style="color:var(--accent-light);font-family:monospace;">
+                    <label class="config-label">Password</label>
+                    <input
+                        type="password"
+                        class="config-input"
+                        id="loginPassword"
+                        value="admin123"
+                        onkeydown="if (event.key === 'Enter') loginUser();"
+                    />
                 </div>
-            </div>
-
-            <!-- Active Peers -->
-            <div class="sidebar-section">
-                <div class="sidebar-section-title">Active Peers</div>
-            </div>
-            <div class="peer-list" id="peerListDisplay">
-                <div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">
-                    No peers online yet.<br>Login to see active users.
+                <div
+                    id="loginError"
+                    style="
+                        color: var(--red);
+                        font-size: 12px;
+                        margin-top: 6px;
+                        display: none;
+                    "
+                >
+                    ❌ Invalid credentials
                 </div>
-            </div>
-
-            <!-- Status Bar -->
-            <div class="status-bar" id="statusBar">
-                <div class="status-dot offline" id="statusDot"></div>
-                <span id="statusText">Not connected</span>
-            </div>
-        </aside>
-    </div>
-
-    <!-- LOGIN MODAL -->
-    <div class="modal-overlay" id="loginModal">
-        <div class="modal">
-            <h3>Login</h3>
-            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
-                Authenticate to join the chat hub
-            </p>
-            <div class="config-group">
-                <label class="config-label">Username</label>
-                <input type="text" class="config-input" id="loginUsername" value="admin"
-                    onkeydown="if(event.key==='Enter') document.getElementById('loginPassword').focus();">
-            </div>
-            <div class="config-group">
-                <label class="config-label">Password</label>
-                <input type="password" class="config-input" id="loginPassword" value="admin123"
-                    onkeydown="if(event.key==='Enter') loginUser();">
-            </div>
-            <div id="loginError" style="color:var(--red);font-size:12px;margin-top:6px;display:none;">
-                ❌ Invalid credentials
-            </div>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" onclick="closeLoginModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="loginUser()">Login</button>
+                <div class="modal-actions">
+                    <button
+                        class="btn btn-secondary"
+                        onclick="closeLoginModal()"
+                    >
+                        Cancel
+                    </button>
+                    <button class="btn btn-primary" onclick="loginUser()">
+                        Login
+                    </button>
+                </div>
             </div>
         </div>
-    </div>
 
-    <!-- Toast Container -->
-    <div class="toast-container" id="toastContainer"></div>
+        <!-- Toast Container -->
+        <div class="toast-container" id="toastContainer"></div>
 
-    <script>
-        // ============================================================
-        // STATE
-        // ============================================================
-        let isAuthenticated = false;
-        let myUsername = '';
-        let myVirtualIp = '';
-        let authToken = '';    // Base64-encoded "user:pass" for Authorization header
-        let knownPeers = {};   // { username: { virtual_ip } }
-        let pollingInterval = null;
-        let peerPollingInterval = null;
+        <script>
+            // ============================================================
+            // STATE
+            // ============================================================
+            let isAuthenticated = false;
+            let myUsername = "";
+            let myVirtualIp = "";
+            let authToken = ""; // Base64-encoded "user:pass" for Authorization header
+            let knownPeers = {}; // { username: { virtual_ip } }
+            let pollingInterval = null;
+            let peerPollingInterval = null;
+            let seenMessageKeys = new Set();
 
-        // Returns headers object with Authorization if logged in
-        function authHeaders(extra) {
-            const h = extra ? Object.assign({}, extra) : {};
-            if (authToken) h['Authorization'] = 'Basic ' + authToken;
-            return h;
-        }
-
-        const PEER_COLORS = [
-            '#6c5ce7', '#00cec9', '#fdcb6e', '#e17055',
-            '#55efc4', '#fd79a8', '#74b9ff', '#a29bfe'
-        ];
-
-        function getPeerColor(name) {
-            let hash = 0;
-            for (let i = 0; i < name.length; i++)
-                hash = name.charCodeAt(i) + ((hash << 5) - hash);
-            return PEER_COLORS[Math.abs(hash) % PEER_COLORS.length];
-        }
-
-        // ============================================================
-        // UI HELPERS
-        // ============================================================
-        function showToast(text) {
-            const container = document.getElementById('toastContainer');
-            const toast = document.createElement('div');
-            toast.className = 'toast';
-            toast.textContent = text;
-            container.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
-        }
-
-        function setStatus(text, type) {
-            document.getElementById('statusText').innerText = text;
-            const dot = document.getElementById('statusDot');
-            dot.className = 'status-dot' + (type === 'error' ? ' error' : type === 'offline' ? ' offline' : '');
-        }
-
-        function updateUserDisplay() {
-            const name = isAuthenticated ? myUsername : 'Guest';
-            document.getElementById('userAvatarSidebar').textContent = name.charAt(0).toUpperCase();
-            document.getElementById('userNameSidebar').textContent = name;
-            document.getElementById('userStatusSidebar').textContent = isAuthenticated ? 'Online' : 'Not logged in';
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // ============================================================
-        // VIEW SWITCHING
-        // ============================================================
-        function switchView(view) {
-            document.querySelectorAll('.channel-item').forEach(el => el.classList.remove('active'));
-            const target = document.querySelector(`[data-view="${view}"]`);
-            if (target) target.classList.add('active');
-
-            document.getElementById('chatTitle').textContent = 'All Messages';
-            document.getElementById('chatSubtitle').textContent = 'Direct & Broadcast messages';
-        }
-
-        // ============================================================
-        // AUTH: Login / Logout
-        // ============================================================
-
-        function openLoginModal() {
-            document.getElementById('loginModal').classList.add('show');
-            document.getElementById('loginUsername').focus();
-            document.getElementById('loginError').style.display = 'none';
-        }
-
-        function closeLoginModal() {
-            document.getElementById('loginModal').classList.remove('show');
-            document.getElementById('loginError').style.display = 'none';
-        }
-
-        function applyAuthenticatedUser(username, virtualIp) {
-            isAuthenticated = true;
-            myUsername = username;
-            myVirtualIp = virtualIp || '—';
-            document.getElementById('authStatus').textContent = 'Logged in as ' + username;
-            document.getElementById('loginBtn').textContent = 'Logged In';
-            document.getElementById('myName').value = username;
-            document.getElementById('myVirtualIp').value = myVirtualIp;
-            updateUserDisplay();
-            setStatus('Connected as ' + username, 'success');
-
-            // Start polling
-            startPolling();
-        }
-
-        async function loginUser() {
-            const username = document.getElementById('loginUsername').value.trim();
-            const password = document.getElementById('loginPassword').value;
-            const errDiv = document.getElementById('loginError');
-            errDiv.style.display = 'none';
-
-            if (!username) {
-                errDiv.textContent = 'Please enter a username.';
-                errDiv.style.display = 'block';
-                return;
+            // Returns headers object with Authorization if logged in
+            function authHeaders(extra) {
+                const h = extra ? Object.assign({}, extra) : {};
+                if (authToken) h["Authorization"] = "Basic " + authToken;
+                return h;
             }
 
-            // Store Basic Auth token
-            authToken = btoa(username + ':' + password);
+            const PEER_COLORS = [
+                "#6c5ce7",
+                "#00cec9",
+                "#fdcb6e",
+                "#e17055",
+                "#55efc4",
+                "#fd79a8",
+                "#74b9ff",
+                "#a29bfe",
+            ];
 
-            try {
-                // Step 1: Login — get session
-                const res = await fetch('/login', {
-                    method: 'PUT',
-                    headers: authHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({ username, password }),
-                    credentials: 'include'
-                });
+            function getPeerColor(name) {
+                let hash = 0;
+                for (let i = 0; i < name.length; i++)
+                    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+                return PEER_COLORS[Math.abs(hash) % PEER_COLORS.length];
+            }
 
-                let data = {};
-                try { data = await res.json(); } catch (_) { }
+            // ============================================================
+            // UI HELPERS
+            // ============================================================
+            function showToast(text) {
+                const container = document.getElementById("toastContainer");
+                const toast = document.createElement("div");
+                toast.className = "toast";
+                toast.textContent = text;
+                container.appendChild(toast);
+                setTimeout(() => toast.remove(), 3000);
+            }
 
-                if (res.ok && data.status === 'ok') {
-                    closeLoginModal();
-                    const loggedInUser = data.username || username;
+            function setStatus(text, type) {
+                document.getElementById("statusText").innerText = text;
+                const dot = document.getElementById("statusDot");
+                dot.className =
+                    "status-dot" +
+                    (type === "error"
+                        ? " error"
+                        : type === "offline"
+                          ? " offline"
+                          : "");
+            }
 
-                    // Save credentials to localStorage for session restoration
-                    localStorage.setItem('chat_auth', JSON.stringify({
-                        username: loggedInUser,
-                        token: authToken
-                    }));
+            function updateUserDisplay() {
+                const name = isAuthenticated ? myUsername : "Guest";
+                document.getElementById("userAvatarSidebar").textContent = name
+                    .charAt(0)
+                    .toUpperCase();
+                document.getElementById("userNameSidebar").textContent = name;
+                document.getElementById("userStatusSidebar").textContent =
+                    isAuthenticated ? "Online" : "Not logged in";
+            }
 
-                    // Step 2: Register peer — get virtual IP
-                    let virtualIp = '—';
-                    try {
-                        const regRes = await fetch('/submit-info', {
-                            method: 'POST',
-                            headers: authHeaders({ 'Content-Type': 'application/json' }),
-                            body: JSON.stringify({ username: loggedInUser }),
-                            credentials: 'include'
-                        });
-                        const regData = await regRes.json();
-                        if (regData.peer && regData.peer.virtual_ip) {
-                            virtualIp = regData.peer.virtual_ip;
-                        }
-                    } catch (_) { }
+            function escapeHtml(text) {
+                const div = document.createElement("div");
+                div.textContent = text;
+                return div.innerHTML;
+            }
 
-                    applyAuthenticatedUser(loggedInUser, virtualIp);
-                    showToast('Welcome, ' + loggedInUser + '!');
-                    addSystemMessage('Logged in as ' + loggedInUser + ' (Virtual IP: ' + virtualIp + ')');
+            // ============================================================
+            // VIEW SWITCHING
+            // ============================================================
+            function switchView(view) {
+                document
+                    .querySelectorAll(".channel-item")
+                    .forEach((el) => el.classList.remove("active"));
+                const target = document.querySelector(`[data-view="${view}"]`);
+                if (target) target.classList.add("active");
 
-                    // Immediately fetch peer list
-                    await getPeerList();
-                } else {
-                    authToken = '';
-                    errDiv.textContent = data.message || 'Invalid credentials';
-                    errDiv.style.display = 'block';
+                document.getElementById("chatTitle").textContent =
+                    "All Messages";
+                document.getElementById("chatSubtitle").textContent =
+                    "Direct & Broadcast messages";
+            }
+
+            // ============================================================
+            // AUTH: Login / Logout
+            // ============================================================
+
+            function openLoginModal() {
+                document.getElementById("loginModal").classList.add("show");
+                document.getElementById("loginUsername").focus();
+                document.getElementById("loginError").style.display = "none";
+            }
+
+            function closeLoginModal() {
+                document.getElementById("loginModal").classList.remove("show");
+                document.getElementById("loginError").style.display = "none";
+            }
+
+            function applyAuthenticatedUser(username, virtualIp) {
+                isAuthenticated = true;
+                myUsername = username;
+                myVirtualIp = virtualIp || "—";
+                document.getElementById("authStatus").textContent =
+                    "Logged in as " + username;
+                document.getElementById("loginBtn").textContent = "Logged In";
+                document.getElementById("myName").value = username;
+                document.getElementById("myVirtualIp").value = myVirtualIp;
+                updateUserDisplay();
+                setStatus("Connected as " + username, "success");
+            }
+
+            async function loginUser() {
+                const username = document
+                    .getElementById("loginUsername")
+                    .value.trim();
+                const password = document.getElementById("loginPassword").value;
+                const errDiv = document.getElementById("loginError");
+                errDiv.style.display = "none";
+
+                if (!username) {
+                    errDiv.textContent = "Please enter a username.";
+                    errDiv.style.display = "block";
+                    return;
                 }
-            } catch (e) {
-                authToken = '';
-                errDiv.textContent = 'Server unreachable: ' + e.message;
-                errDiv.style.display = 'block';
-            }
-        }
 
+                // Store Basic Auth token
+                authToken = btoa(username + ":" + password);
 
-        async function logoutUser() {
-            // Notify the server to remove this peer
-            if (isAuthenticated) {
                 try {
-                    await fetch('/logout', {
-                        method: 'POST',
-                        headers: authHeaders(),
-                        credentials: 'include'
+                    // Step 1: Login — get session
+                    const res = await fetch("/login", {
+                        method: "PUT",
+                        headers: authHeaders({
+                            "Content-Type": "application/json",
+                        }),
+                        body: JSON.stringify({ username, password }),
+                        credentials: "include",
                     });
-                } catch (_) { }
+
+                    let data = {};
+                    try {
+                        data = await res.json();
+                    } catch (_) {}
+
+                    if (res.ok && data.status === "ok") {
+                        closeLoginModal();
+                        const loggedInUser = data.username || username;
+
+                        // Save credentials to localStorage for session restoration
+                        localStorage.setItem(
+                            "chat_auth",
+                            JSON.stringify({
+                                username: loggedInUser,
+                                token: authToken,
+                            }),
+                        );
+
+                        // Step 2: Register peer — get virtual IP
+                        let virtualIp = "—";
+                        try {
+                            const regRes = await fetch("/submit-info", {
+                                method: "POST",
+                                headers: authHeaders({
+                                    "Content-Type": "application/json",
+                                }),
+                                body: JSON.stringify({
+                                    username: loggedInUser,
+                                }),
+                                credentials: "include",
+                            });
+                            const regData = await regRes.json();
+                            if (regData.peer && regData.peer.virtual_ip) {
+                                virtualIp = regData.peer.virtual_ip;
+                            }
+                        } catch (_) {}
+
+                        applyAuthenticatedUser(loggedInUser, virtualIp);
+                        await loadMessageHistory();
+                        addSystemMessage(
+                            "Logged in as " +
+                                loggedInUser +
+                                " (Virtual IP: " +
+                                virtualIp +
+                                ")",
+                        );
+                        startPolling();
+                        showToast("Welcome, " + loggedInUser + "!");
+
+                        // Immediately fetch peer list
+                        await getPeerList();
+                    } else {
+                        authToken = "";
+                        errDiv.textContent =
+                            data.message || "Invalid credentials";
+                        errDiv.style.display = "block";
+                    }
+                } catch (e) {
+                    authToken = "";
+                    errDiv.textContent = "Server unreachable: " + e.message;
+                    errDiv.style.display = "block";
+                }
             }
-            localStorage.removeItem('chat_auth');
-            authToken = '';
-            forceLogoutUI('Logged out.');
-        }
 
-        // Force-reset UI to logged-out state (no server call)
-        function forceLogoutUI(reason) {
-            isAuthenticated = false;
-            myUsername = '';
-            myVirtualIp = '';
-            authToken = '';
-            localStorage.removeItem('chat_auth');
-            stopPolling();
+            async function logoutUser() {
+                // Notify the server to remove this peer
+                if (isAuthenticated) {
+                    try {
+                        await fetch("/logout", {
+                            method: "POST",
+                            headers: authHeaders(),
+                            credentials: "include",
+                        });
+                    } catch (_) {}
+                }
+                localStorage.removeItem("chat_auth");
+                authToken = "";
+                forceLogoutUI("Logged out.");
+            }
 
-            document.getElementById('authStatus').textContent = 'Not logged in';
-            document.getElementById('loginBtn').textContent = 'Login';
-            document.getElementById('myName').value = '';
-            document.getElementById('myVirtualIp').value = '—';
-            document.getElementById('chatMessages').innerHTML =
-                '<div class="msg-system">Welcome to HybridChat! Login to start chatting.</div>';
-            document.getElementById('peerListDisplay').innerHTML =
-                '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">No peers online yet.<br>Login to see active users.</div>';
-            document.getElementById('targetPeerSelect').innerHTML = '<option value="">Select peer...</option>';
-            updateUserDisplay();
-            setStatus('Not connected', 'offline');
-            if (reason) showToast(reason);
-        }
+            // Force-reset UI to logged-out state (no server call)
+            function forceLogoutUI(reason) {
+                isAuthenticated = false;
+                myUsername = "";
+                myVirtualIp = "";
+                authToken = "";
+                localStorage.removeItem("chat_auth");
+                stopPolling();
 
-        // ============================================================
-        // PEER LIST
-        // ============================================================
+                document.getElementById("authStatus").textContent =
+                    "Not logged in";
+                document.getElementById("loginBtn").textContent = "Login";
+                document.getElementById("myName").value = "";
+                document.getElementById("myVirtualIp").value = "—";
+                seenMessageKeys.clear();
+                document.getElementById("chatMessages").innerHTML =
+                    '<div class="msg-system">Welcome to HybridChat! Login to start chatting.</div>';
+                document.getElementById("peerListDisplay").innerHTML =
+                    '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">No peers online yet.<br>Login to see active users.</div>';
+                document.getElementById("targetPeerSelect").innerHTML =
+                    '<option value="">Select peer...</option>';
+                updateUserDisplay();
+                setStatus("Not connected", "offline");
+                if (reason) showToast(reason);
+            }
 
-        async function getPeerList() {
-            if (!isAuthenticated) return;
+            // ============================================================
+            // PEER LIST
+            // ============================================================
 
-            try {
-                const res = await fetch('/get-list', {
-                    headers: authHeaders(),
-                    credentials: 'include'
-                });
-                if (!res.ok) {
-                    // 401 = session expired or cookie deleted
-                    if (res.status === 401) {
-                        forceLogoutUI('Session expired. Please login again.');
+            async function getPeerList() {
+                if (!isAuthenticated) return;
+
+                try {
+                    const res = await fetch("/get-list", {
+                        headers: authHeaders(),
+                        credentials: "include",
+                    });
+                    if (!res.ok) {
+                        // 401 = session expired or cookie deleted
+                        if (res.status === 401) {
+                            forceLogoutUI(
+                                "Session expired. Please login again.",
+                            );
+                            return;
+                        }
                         return;
                     }
-                    return;
+                    const data = await res.json();
+
+                    // Also check JSON-level auth error
+                    if (data.__status__ === 401 || data.status === "error") {
+                        forceLogoutUI("Session expired. Please login again.");
+                        return;
+                    }
+
+                    knownPeers = {};
+                    (data.peers || []).forEach((p) => {
+                        knownPeers[p.username] = { virtual_ip: p.virtual_ip };
+                    });
+
+                    renderPeerList();
+                    updatePeerSelector();
+
+                    const count = Object.keys(knownPeers).length;
+                    setStatus(count + " peer(s) online", "success");
+                } catch (e) {
+                    /* silently ignore */
                 }
-                const data = await res.json();
-
-                // Also check JSON-level auth error
-                if (data.__status__ === 401 || data.status === 'error') {
-                    forceLogoutUI('Session expired. Please login again.');
-                    return;
-                }
-
-                knownPeers = {};
-                (data.peers || []).forEach(p => {
-                    knownPeers[p.username] = { virtual_ip: p.virtual_ip };
-                });
-
-                renderPeerList();
-                updatePeerSelector();
-
-                const count = Object.keys(knownPeers).length;
-                setStatus(count + ' peer(s) online', 'success');
-            } catch (e) { /* silently ignore */ }
-        }
-
-        function renderPeerList() {
-            const container = document.getElementById('peerListDisplay');
-
-            if (Object.keys(knownPeers).length === 0) {
-                container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">No peers found.</div>';
-                return;
             }
 
-            container.innerHTML = '';
-            for (const [name, info] of Object.entries(knownPeers)) {
-                const color = getPeerColor(name);
-                const isSelf = (name === myUsername);
-                const item = document.createElement('div');
-                item.className = 'peer-item';
-                if (!isSelf) {
-                    item.onclick = () => {
-                        document.getElementById('targetPeerSelect').value = name;
-                        showToast('Target set to ' + name);
-                    };
+            function renderPeerList() {
+                const container = document.getElementById("peerListDisplay");
+
+                if (Object.keys(knownPeers).length === 0) {
+                    container.innerHTML =
+                        '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">No peers found.</div>';
+                    return;
                 }
-                item.innerHTML = `
+
+                container.innerHTML = "";
+                for (const [name, info] of Object.entries(knownPeers)) {
+                    const color = getPeerColor(name);
+                    const isSelf = name === myUsername;
+                    const item = document.createElement("div");
+                    item.className = "peer-item";
+                    if (!isSelf) {
+                        item.onclick = () => {
+                            document.getElementById("targetPeerSelect").value =
+                                name;
+                            showToast("Target set to " + name);
+                        };
+                    }
+                    item.innerHTML = `
                     <div class="peer-avatar" style="background:${color}">${name.charAt(0).toUpperCase()}</div>
-                    <span class="peer-name">${escapeHtml(name)}${isSelf ? ' (You)' : ''}</span>
-                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.virtual_ip || '—')}</span>
+                    <span class="peer-name">${escapeHtml(name)}${isSelf ? " (You)" : ""}</span>
+                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.virtual_ip || "—")}</span>
                     <div class="peer-status-dot"></div>
                 `;
-                container.appendChild(item);
-            }
-        }
-
-        function updatePeerSelector() {
-            const select = document.getElementById('targetPeerSelect');
-            const currentValue = select.value;
-            select.innerHTML = '<option value="">Select peer...</option>';
-            for (const name of Object.keys(knownPeers)) {
-                if (name !== myUsername) {
-                    const opt = document.createElement('option');
-                    opt.value = name;
-                    opt.textContent = name;
-                    select.appendChild(opt);
+                    container.appendChild(item);
                 }
             }
-            // Restore previous selection if still available
-            if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
-                select.value = currentValue;
-            }
-        }
 
-        // ============================================================
-        // SEND MESSAGES
-        // ============================================================
-
-        let _sending = false;
-
-        async function sendMessage() {
-            if (_sending) return;
-            _sending = true;
-            setTimeout(() => _sending = false, 500);
-
-            const msgText = document.getElementById('messageInput').value.trim();
-            if (!msgText) return;
-
-            const toUser = document.getElementById('targetPeerSelect').value;
-            if (!toUser) {
-                showToast('Please select a peer to send to!');
-                return;
+            function updatePeerSelector() {
+                const select = document.getElementById("targetPeerSelect");
+                const currentValue = select.value;
+                select.innerHTML = '<option value="">Select peer...</option>';
+                for (const name of Object.keys(knownPeers)) {
+                    if (name !== myUsername) {
+                        const opt = document.createElement("option");
+                        opt.value = name;
+                        opt.textContent = name;
+                        select.appendChild(opt);
+                    }
+                }
+                // Restore previous selection if still available
+                if (
+                    currentValue &&
+                    select.querySelector(`option[value="${currentValue}"]`)
+                ) {
+                    select.value = currentValue;
+                }
             }
 
-            try {
-                const res = await fetch('/send-peer', {
-                    method: 'POST',
-                    headers: authHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({
-                        from: myUsername,
-                        to: toUser,
-                        msg: msgText
-                    }),
-                    credentials: 'include'
-                });
+            // ============================================================
+            // SEND MESSAGES
+            // ============================================================
 
-                if (res.ok) {
-                    document.getElementById('messageInput').value = '';
-                    // Message will appear via the next poll cycle (within 1s)
+            let _sending = false;
+
+            async function sendMessage() {
+                if (_sending) return;
+                _sending = true;
+                setTimeout(() => (_sending = false), 500);
+
+                const msgText = document
+                    .getElementById("messageInput")
+                    .value.trim();
+                if (!msgText) return;
+
+                const toUser =
+                    document.getElementById("targetPeerSelect").value;
+                if (!toUser) {
+                    showToast("Please select a peer to send to!");
+                    return;
+                }
+
+                try {
+                    const res = await fetch("/send-peer", {
+                        method: "POST",
+                        headers: authHeaders({
+                            "Content-Type": "application/json",
+                        }),
+                        body: JSON.stringify({
+                            from: myUsername,
+                            to: toUser,
+                            msg: msgText,
+                        }),
+                        credentials: "include",
+                    });
+
+                    if (res.ok) {
+                        document.getElementById("messageInput").value = "";
+                        // Message will appear via the next poll cycle (within 1s)
+                    } else {
+                        const data = await res.json().catch(() => ({}));
+                        showToast(
+                            "Failed: " + (data.message || "HTTP " + res.status),
+                        );
+                    }
+                } catch (e) {
+                    showToast("Connection error: " + e.message);
+                }
+            }
+
+            async function sendBroadcastMsg() {
+                const msgText = document
+                    .getElementById("messageInput")
+                    .value.trim();
+                if (!msgText) return;
+
+                try {
+                    const res = await fetch("/broadcast-peer", {
+                        method: "POST",
+                        headers: authHeaders({
+                            "Content-Type": "application/json",
+                        }),
+                        body: JSON.stringify({
+                            from: myUsername,
+                            msg: msgText,
+                        }),
+                        credentials: "include",
+                    });
+
+                    if (res.ok) {
+                        document.getElementById("messageInput").value = "";
+                        showToast("Broadcast sent!");
+                        // Message will appear via the next poll cycle (within 1s)
+                    }
+                } catch (e) {
+                    showToast("Error: " + e.message);
+                }
+            }
+
+            // ============================================================
+            // MESSAGE RENDERING
+            // ============================================================
+
+            function messageKey(msgObj) {
+                if (msgObj.id) return msgObj.id;
+                return [
+                    msgObj.from || "",
+                    msgObj.to || "",
+                    msgObj.type || "",
+                    msgObj.ts || "",
+                    msgObj.msg || "",
+                ].join("|");
+            }
+
+            function resetMessageView(emptyText) {
+                seenMessageKeys.clear();
+                document.getElementById("chatMessages").innerHTML = "";
+                if (emptyText) addSystemMessage(emptyText);
+            }
+
+            function addMessage(msgObj) {
+                const key = messageKey(msgObj);
+                if (seenMessageKeys.has(key)) return false;
+                seenMessageKeys.add(key);
+
+                const box = document.getElementById("chatMessages");
+                const group = document.createElement("div");
+                group.className = "msg-group";
+
+                const text = msgObj.msg || "";
+                const type = msgObj.type || "direct";
+                const badgeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+                const senderName = msgObj.from || "Unknown";
+                const color = getPeerColor(senderName);
+
+                // Format timestamp
+                let time;
+                if (msgObj.ts) {
+                    time = new Date(msgObj.ts * 1000).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
                 } else {
-                    const data = await res.json().catch(() => ({}));
-                    showToast('Failed: ' + (data.message || 'HTTP ' + res.status));
+                    time = new Date().toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
                 }
-            } catch (e) {
-                showToast('Connection error: ' + e.message);
-            }
-        }
 
-        async function sendBroadcastMsg() {
-            const msgText = document.getElementById('messageInput').value.trim();
-            if (!msgText) return;
+                const isMe = senderName === myUsername;
+                const displayName = isMe ? senderName + " (You)" : senderName;
 
-            try {
-                const res = await fetch('/broadcast-peer', {
-                    method: 'POST',
-                    headers: authHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({
-                        from: myUsername,
-                        msg: msgText
-                    }),
-                    credentials: 'include'
-                });
-
-                if (res.ok) {
-                    document.getElementById('messageInput').value = '';
-                    showToast('Broadcast sent!');
-                    // Message will appear via the next poll cycle (within 1s)
+                if (isMe) {
+                    group.classList.add("me");
                 }
-            } catch (e) {
-                showToast('Error: ' + e.message);
-            }
-        }
 
-        // ============================================================
-        // MESSAGE RENDERING
-        // ============================================================
-
-        function addMessage(msgObj) {
-            const box = document.getElementById('chatMessages');
-            const group = document.createElement('div');
-            group.className = 'msg-group';
-
-            const text = msgObj.msg || '';
-            const type = msgObj.type || 'direct';
-            const badgeLabel = type.charAt(0).toUpperCase() + type.slice(1);
-            const senderName = msgObj.from || 'Unknown';
-            const color = getPeerColor(senderName);
-
-            // Format timestamp
-            let time;
-            if (msgObj.ts) {
-                time = new Date(msgObj.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            } else {
-                time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            }
-
-            const isMe = (senderName === myUsername);
-            const displayName = isMe ? senderName + ' (You)' : senderName;
-
-            if (isMe) {
-                group.classList.add('me');
-            }
-
-            group.innerHTML = `
+                group.innerHTML = `
                 <div class="msg-sender" style="color:${color}">
                     ${escapeHtml(displayName)}
                     <span class="msg-badge ${type}">${badgeLabel}</span>
@@ -584,141 +836,185 @@
                 </div>
                 <div class="msg-text">${escapeHtml(text)}</div>
             `;
-            box.appendChild(group);
-            box.scrollTop = box.scrollHeight;
-        }
-
-        function addSystemMessage(text) {
-            const box = document.getElementById('chatMessages');
-            const div = document.createElement('div');
-            div.className = 'msg-system';
-            div.textContent = text;
-            box.appendChild(div);
-            box.scrollTop = box.scrollHeight;
-        }
-
-        // ============================================================
-        // POLLING — fetch new messages every 1 second
-        // ============================================================
-
-        async function fetchMessages() {
-            if (!isAuthenticated) return;
-
-            try {
-                const res = await fetch('/fetch-messages', {
-                    headers: authHeaders(),
-                    credentials: 'include'
-                });
-
-                // Handle auth failure (cookie deleted, session expired)
-                if (!res.ok) {
-                    if (res.status === 401) {
-                        forceLogoutUI('Session expired. Please login again.');
-                    }
-                    return;
-                }
-
-                const data = await res.json();
-
-                // Also check JSON-level auth error
-                if (data.__status__ === 401 || data.status === 'error') {
-                    forceLogoutUI('Session expired. Please login again.');
-                    return;
-                }
-
-                const msgs = data.messages || [];
-
-                let newFromOthers = 0;
-                for (const m of msgs) {
-                    addMessage(m);
-                    if (m.from !== myUsername) newFromOthers++;
-                }
-
-                if (newFromOthers > 0) {
-                    showNotification(newFromOthers);
-                }
-            } catch (e) { /* silently ignore poll errors */ }
-        }
-
-        function showNotification(count) {
-            const badge = document.getElementById('notificationBadge');
-            badge.textContent = count + ' new';
-            badge.classList.add('show');
-            setTimeout(() => badge.classList.remove('show'), 3000);
-        }
-
-        function startPolling() {
-            stopPolling();
-            // Fetch messages every 1 second
-            pollingInterval = setInterval(fetchMessages, 1000);
-            // Refresh peer list every 5 seconds
-            peerPollingInterval = setInterval(getPeerList, 5000);
-        }
-
-        function stopPolling() {
-            if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
-            if (peerPollingInterval) { clearInterval(peerPollingInterval); peerPollingInterval = null; }
-        }
-
-        // ============================================================
-        // INITIALIZATION — restore session from localStorage
-        // ============================================================
-        (async function init() {
-            // Check if we have saved credentials in localStorage
-            const saved = localStorage.getItem('chat_auth');
-            if (!saved) {
-                forceLogoutUI();
-                return;
+                box.appendChild(group);
+                box.scrollTop = box.scrollHeight;
+                return true;
             }
 
-            try {
-                const { username, token } = JSON.parse(saved);
-                if (!username || !token) {
-                    forceLogoutUI();
-                    return;
-                }
+            function addSystemMessage(text) {
+                const box = document.getElementById("chatMessages");
+                const div = document.createElement("div");
+                div.className = "msg-system";
+                div.textContent = text;
+                box.appendChild(div);
+                box.scrollTop = box.scrollHeight;
+            }
 
-                authToken = token;
+            // ============================================================
+            // POLLING — fetch new messages every 1 second
+            // ============================================================
 
-                // Validate credentials with the server
-                const res = await fetch('/hello', {
-                    method: 'GET',
-                    headers: authHeaders(),
-                    credentials: 'include'
-                });
+            async function loadMessageHistory() {
+                if (!isAuthenticated) return;
 
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.status === 'ok' && data.user) {
-                        // Valid session — restore it and re-register
-                        let virtualIp = '—';
-                        try {
-                            const regRes = await fetch('/submit-info', {
-                                method: 'POST',
-                                headers: authHeaders({ 'Content-Type': 'application/json' }),
-                                body: JSON.stringify({ username: data.user }),
-                                credentials: 'include'
-                            });
-                            const regData = await regRes.json();
-                            if (regData.peer && regData.peer.virtual_ip) {
-                                virtualIp = regData.peer.virtual_ip;
-                            }
-                        } catch (_) { }
+                try {
+                    const res = await fetch("/message-history", {
+                        headers: authHeaders(),
+                        credentials: "include",
+                    });
 
-                        applyAuthenticatedUser(data.user, virtualIp);
-                        showToast('Session restored for ' + data.user);
-                        await getPeerList();
+                    if (!res.ok) {
+                        if (res.status === 401) {
+                            forceLogoutUI(
+                                "Session expired. Please login again.",
+                            );
+                        }
                         return;
                     }
+
+                    const data = await res.json();
+                    if (data.__status__ === 401 || data.status === "error") {
+                        forceLogoutUI("Session expired. Please login again.");
+                        return;
+                    }
+
+                    const msgs = data.messages || [];
+                    resetMessageView(msgs.length ? "" : "No messages yet.");
+                    for (const m of msgs) {
+                        addMessage(m);
+                    }
+                } catch (e) {
+                    /* keep restored login usable even if history fails */
                 }
-            } catch (_) { }
+            }
 
-            // Invalid saved credentials
-            forceLogoutUI();
-        })();
+            async function fetchMessages() {
+                if (!isAuthenticated) return;
 
+                try {
+                    const res = await fetch("/fetch-messages", {
+                        headers: authHeaders(),
+                        credentials: "include",
+                    });
 
-    </script>
-</body>
+                    // Handle auth failure (cookie deleted, session expired)
+                    if (!res.ok) {
+                        if (res.status === 401) {
+                            forceLogoutUI(
+                                "Session expired. Please login again.",
+                            );
+                        }
+                        return;
+                    }
 
+                    const data = await res.json();
+
+                    // Also check JSON-level auth error
+                    if (data.__status__ === 401 || data.status === "error") {
+                        forceLogoutUI("Session expired. Please login again.");
+                        return;
+                    }
+
+                    const msgs = data.messages || [];
+
+                    let newFromOthers = 0;
+                    for (const m of msgs) {
+                        if (addMessage(m) && m.from !== myUsername)
+                            newFromOthers++;
+                    }
+
+                    if (newFromOthers > 0) {
+                        showNotification(newFromOthers);
+                    }
+                } catch (e) {
+                    /* silently ignore poll errors */
+                }
+            }
+
+            function showNotification(count) {
+                const badge = document.getElementById("notificationBadge");
+                badge.textContent = count + " new";
+                badge.classList.add("show");
+                setTimeout(() => badge.classList.remove("show"), 3000);
+            }
+
+            function startPolling() {
+                stopPolling();
+                // Fetch messages every 1 second
+                pollingInterval = setInterval(fetchMessages, 1000);
+                // Refresh peer list every 5 seconds
+                peerPollingInterval = setInterval(getPeerList, 5000);
+            }
+
+            function stopPolling() {
+                if (pollingInterval) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                }
+                if (peerPollingInterval) {
+                    clearInterval(peerPollingInterval);
+                    peerPollingInterval = null;
+                }
+            }
+
+            // ============================================================
+            // INITIALIZATION — restore session from localStorage
+            // ============================================================
+            (async function init() {
+                // Use saved Basic auth when available, but the HttpOnly session
+                // cookie is enough for restore after a normal browser refresh.
+                const saved = localStorage.getItem("chat_auth");
+                let token = "";
+
+                try {
+                    if (saved) {
+                        const parsed = JSON.parse(saved);
+                        token = parsed.token || "";
+                    }
+                    authToken = token;
+
+                    // Validate credentials with the server
+                    const res = await fetch("/hello", {
+                        method: "GET",
+                        headers: authHeaders(),
+                        credentials: "include",
+                    });
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.status === "ok" && data.user) {
+                            // Valid session — restore it and re-register
+                            let virtualIp = "—";
+                            try {
+                                const regRes = await fetch("/submit-info", {
+                                    method: "POST",
+                                    headers: authHeaders({
+                                        "Content-Type": "application/json",
+                                    }),
+                                    body: JSON.stringify({
+                                        username: data.user,
+                                    }),
+                                    credentials: "include",
+                                });
+                                const regData = await regRes.json();
+                                if (regData.peer && regData.peer.virtual_ip) {
+                                    virtualIp = regData.peer.virtual_ip;
+                                }
+                            } catch (_) {}
+
+                            applyAuthenticatedUser(data.user, virtualIp);
+                            await loadMessageHistory();
+                            startPolling();
+                            showToast("Session restored for " + data.user);
+                            await getPeerList();
+                            return;
+                        }
+                    }
+                } catch (_) {}
+
+                // Invalid saved credentials
+                forceLogoutUI();
+            })();
+        </script>
+    </body>
 </html>
