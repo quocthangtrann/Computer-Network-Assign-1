@@ -13,39 +13,22 @@
 #
 
 
-"""
-start_backend
-~~~~~~~~~~~~~~~~~
 
-This module provides a simple entry point for deploying backend server process
-using the socket framework. It parses command-line arguments to configure the
-server's IP address and port, and then launches the backend server.
-"""
 
-import socket
 import argparse
 
-from daemon import create_backend
+from apps.sampleapp import create_sampleapp
 
 # Default port number used if none is specified via command-line arguments.
-PORT = 9000 
+PORT = 9000
 
 if __name__ == "__main__":
-    """
-    Entry point for launching the backend server.
 
-    This block parses command-line arguments to determine the server's IP address
-    and port. It then calls `create_backend(ip, port)` to start the RESTful
-    application server.
-
-    :arg --server-ip (str): IP address to bind the server (default: 127.0.0.1).
-    :arg --server-port (int): Port number to bind the server (default: 9000).
-    """
 
     parser = argparse.ArgumentParser(
         prog='Backend',
-        description='Start the backend process',
-        epilog='Backend daemon for http_deamon application'
+        description='Start the backend process (Centralized Hub)',
+        epilog='Backend daemon for HybridChat application'
     )
     parser.add_argument('--server-ip',
         type=str,
@@ -58,9 +41,9 @@ if __name__ == "__main__":
         default=PORT,
         help='Port number to bind the server. Default is {}.'.format(PORT)
     )
- 
+
     args = parser.parse_args()
     ip = args.server_ip
     port = args.server_port
 
-    create_backend(ip, port)
+    create_sampleapp(ip, port)

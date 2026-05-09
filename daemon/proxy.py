@@ -10,31 +10,7 @@
 # while attending the course
 #
 
-"""
-daemon.proxy
-~~~~~~~~~~~~~~~~~
 
-This module implements the proxy server (reverse proxy).
-
-Architecture role:
-  Client Browser → Proxy (port 8080) → Backend (port 9000) or SampleApp (port 2026)
-
-The proxy reads the HTTP `Host` header from each incoming request, looks up the
-matching backend from the routes config (built from proxy.conf), and forwards the
-raw HTTP bytes to that backend. The backend's response is stream-copied back to the
-client.
-
-The proxy uses multi-threading: one daemon thread per client connection, so multiple
-browsers can be served simultaneously without blocking.
-
-Requirements:
------------------
-- socket: TCP networking.
-- threading: One thread per client for non-blocking proxy.
-- response: 404 builder.
-- httpadapter: HttpAdapter for HTTP request processing.
-- dictionary: CaseInsensitiveDict for headers.
-"""
 
 import socket
 import threading
@@ -165,8 +141,24 @@ def resolve_routing_policy(hostname, routes):
     # Determine the target backend host and port for an incoming hostname.
     print("[Proxy] Resolving hostname: {}".format(hostname))
 
-    # Look up the hostname; fall back to localhost:9000 if unknown
-    entry = routes.get(hostname, ('127.0.0.1:9000', 'round-robin'))
+    # Look up the hostname by exact match first
+    entry = routes.get(hostname)
+
+    # If no exact match, try matching by port number only.
+    # This allows "192.168.x.x:8080" to match a config block for "0.0.0.0:8080"
+    if entry is None:
+        req_port = hostname.rsplit(":", 1)[-1] if ":" in hostname else ""
+        for key, val in routes.items():
+            if key.startswith("__"):
+                continue
+            cfg_port = key.rsplit(":", 1)[-1] if ":" in key else ""
+            if req_port and cfg_port == req_port:
+                entry = val
+                print("[Proxy] Port-matched {} -> config key {}".format(hostname, key))
+                break
+
+    if entry is None:
+        entry = ('127.0.0.1:9000', 'round-robin')
     proxy_map, policy = entry
     print("[Proxy] proxy_map={} policy={}".format(proxy_map, policy))
 
