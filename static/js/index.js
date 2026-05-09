@@ -6,6 +6,7 @@ let currentDirectPeer = null;
 let lastMsgCount = 0;
 let directMessages = [];
 let seenDirectMessageKeys = new Set();
+let channelMessages = {}; // { channelName: Array<message> }
 let lastChannelMsgCounts = {}; // { channelName: count }
 let seenChannelMessageKeys = {}; // { channelName: Set<string> }
 // knownPeers: { username: {ip, port} }  (converted from server's list format)
@@ -15,6 +16,7 @@ let isAuthenticated = false;
 let trackerApiBase = "";
 let authToken = "";
 let selectedPeer = null;
+let historyReadyForOwner = "";
 
 const PEER_COLORS = [
     "#6c5ce7",
@@ -32,6 +34,10 @@ function getPeerColor(name) {
     for (let i = 0; i < name.length; i++)
         hash = name.charCodeAt(i) + ((hash << 5) - hash);
     return PEER_COLORS[Math.abs(hash) % PEER_COLORS.length];
+}
+
+function currentOwner() {
+    return document.getElementById("myName").value.trim();
 }
 
 // ---- URL helpers ----
@@ -196,10 +202,7 @@ function switchChannel(channelName) {
     document.getElementById("broadcastBtn").style.display = "none";
     document.getElementById("connectBtn").style.display = "none";
 
-    document.getElementById("chatMessages").innerHTML =
-        `<div class="msg-system">Welcome to #${channelName}</div>`;
-    lastChannelMsgCounts[channelName] = 0;
-    seenChannelMessageKeys[channelName] = new Set();
+    renderChannelMessages(channelName);
 }
 
 // ============================================================
@@ -588,6 +591,8 @@ function escapeHtml(text) {
 function channelMessageKey(channelName, msg) {
     if (msg.id) return msg.id;
     return [
+        msg.owner || "",
+        msg.type || "channel",
         channelName,
         msg.from || "",
         msg.to || "",
@@ -599,6 +604,7 @@ function channelMessageKey(channelName, msg) {
 function directMessageKey(msg) {
     if (msg.id) return msg.id;
     return [
+        msg.owner || "",
         msg.type || "",
         msg.from || "",
         msg.to || "",
@@ -610,6 +616,120 @@ function directMessageKey(msg) {
 function directConversationPartner(msg, myName) {
     if (!msg || msg.type !== "direct") return null;
     return msg.from === myName ? msg.to : msg.from;
+}
+
+function normalizeDirectHistoryMessage(msg, owner) {
+    const type = msg.type || (msg.to === "broadcast" ? "broadcast" : "direct");
+    const peer =
+        type === "direct"
+            ? directConversationPartner({ ...msg, type }, owner)
+            : null;
+    const ts =
+        typeof msg.ts === "number"
+            ? msg.ts
+            : msg.ts
+              ? Number(msg.ts)
+              : Date.now();
+    const record = {
+        owner,
+        type,
+        from: msg.from || "",
+        to: msg.to || (type === "broadcast" ? "broadcast" : ""),
+        channel: null,
+        peer,
+        msg: msg.msg || msg.message || "",
+        ts,
+    };
+    record.id = msg.id || directMessageKey(record);
+    return record;
+}
+
+function normalizeChannelHistoryMessage(channelName, msg, owner) {
+    const ts =
+        typeof msg.ts === "number"
+            ? msg.ts
+            : msg.ts
+              ? Number(msg.ts)
+              : Date.now();
+    const channel =
+        normalizeChannelName(msg.channel || channelName) || channelName;
+    const record = {
+        owner,
+        type: "channel",
+        from: msg.from || "",
+        to: msg.to || channel,
+        channel,
+        peer: null,
+        msg: msg.msg || msg.message || "",
+        ts,
+    };
+    record.id = msg.id || channelMessageKey(channel, record);
+    return record;
+}
+
+async function persistHistoryMessage(record) {
+    if (!window.ChatHistoryDB || !record.owner) return;
+    try {
+        await window.ChatHistoryDB.saveMessage(record);
+    } catch (e) {
+        console.warn("[History] save failed", e);
+    }
+}
+
+function resetHistoryMemory() {
+    directMessages = [];
+    seenDirectMessageKeys = new Set();
+    channelMessages = {};
+    lastChannelMsgCounts = {};
+    seenChannelMessageKeys = {};
+    lastMsgCount = 0;
+    currentDirectPeer = null;
+    document
+        .querySelectorAll("[data-direct-peer]")
+        .forEach((element) => element.remove());
+}
+
+async function loadHistoryForOwner(owner) {
+    if (!owner || !window.ChatHistoryDB || historyReadyForOwner === owner)
+        return;
+
+    resetHistoryMemory();
+    try {
+        await window.ChatHistoryDB.open();
+        const records = await window.ChatHistoryDB.getMessagesByOwner(owner);
+        records.forEach((record) => {
+            if (record.type === "channel" && record.channel) {
+                const channel = normalizeChannelName(record.channel);
+                if (!channelMessages[channel]) channelMessages[channel] = [];
+                if (!seenChannelMessageKeys[channel]) {
+                    seenChannelMessageKeys[channel] = new Set();
+                }
+                if (!seenChannelMessageKeys[channel].has(record.id)) {
+                    channelMessages[channel].push(record);
+                    seenChannelMessageKeys[channel].add(record.id);
+                    ensureChannelInSidebar(channel);
+                }
+                return;
+            }
+
+            if (!seenDirectMessageKeys.has(record.id)) {
+                directMessages.push(record);
+                seenDirectMessageKeys.add(record.id);
+                if (record.peer) ensureDirectConversation(record.peer);
+            }
+        });
+
+        Object.keys(channelMessages).forEach((channel) => {
+            channelMessages[channel].sort((a, b) => a.ts - b.ts);
+            lastChannelMsgCounts[channel] = channelMessages[channel].length;
+        });
+        directMessages.sort((a, b) => a.ts - b.ts);
+        historyReadyForOwner = owner;
+        if (currentView === "direct") renderDirectMessages();
+        else renderChannelMessages(currentView);
+    } catch (e) {
+        console.warn("[History] load failed", e);
+    }
 }
 
 function ensureDirectConversation(username) {
@@ -665,6 +785,22 @@ function renderDirectMessages() {
     });
 }
 
+function renderChannelMessages(channelName) {
+    if (currentView !== channelName) return;
+
+    const box = document.getElementById("chatMessages");
+    const messages = channelMessages[channelName] || [];
+    box.innerHTML = `<div class="msg-system">Welcome to #${channelName}</div>`;
+
+    messages.forEach((msg) => {
+        addMessage({
+            type: "channel",
+            from: msg.from,
+            msg: msg.msg,
+        });
+    });
+}
+
 // ============================================================
 // POLLING — fetch new messages every 2 s
 // ============================================================
@@ -689,26 +825,22 @@ async function fetchMessages() {
         let newFromOthers = 0;
         let changed = false;
 
-        msgs.forEach((msg) => {
-            const typedMsg = Object.assign({}, msg, {
-                type:
-                    msg.type ||
-                    (msg.to === "broadcast" ? "broadcast" : "direct"),
-            });
-            const key = directMessageKey(typedMsg);
-            if (seenDirectMessageKeys.has(key)) return;
+        for (const msg of msgs) {
+            const typedMsg = normalizeDirectHistoryMessage(msg, myName);
+            const key = typedMsg.id;
+            if (seenDirectMessageKeys.has(key)) continue;
 
             seenDirectMessageKeys.add(key);
             directMessages.push(typedMsg);
             changed = true;
 
-            const partner = directConversationPartner(typedMsg, myName);
-            if (partner) {
-                ensureDirectConversation(partner);
+            if (typedMsg.peer) {
+                ensureDirectConversation(typedMsg.peer);
             }
+            await persistHistoryMessage(typedMsg);
 
             if (typedMsg.from !== myName) newFromOthers++;
-        });
+        }
 
         lastMsgCount = msgs.length;
         if (changed) {
@@ -738,23 +870,33 @@ async function fetchChannelMessages(channelName) {
         if (!res.ok) return;
         const data = await res.json();
         const msgs = data.messages || [];
-        const prevCount = lastChannelMsgCounts[channelName] || 0;
+        const owner = currentOwner();
+        let changed = false;
         if (!seenChannelMessageKeys[channelName]) {
             seenChannelMessageKeys[channelName] = new Set();
         }
+        if (!channelMessages[channelName]) {
+            channelMessages[channelName] = [];
+        }
 
-        if (msgs.length > prevCount) {
-            for (let i = prevCount; i < msgs.length; i++) {
-                const key = channelMessageKey(channelName, msgs[i]);
-                if (seenChannelMessageKeys[channelName].has(key)) continue;
-                seenChannelMessageKeys[channelName].add(key);
-                addMessage({
-                    type: "channel",
-                    from: msgs[i].from,
-                    msg: msgs[i].msg,
-                });
-            }
-            lastChannelMsgCounts[channelName] = msgs.length;
+        for (const msg of msgs) {
+            const record = normalizeChannelHistoryMessage(
+                channelName,
+                msg,
+                owner,
+            );
+            const key = record.id;
+            if (seenChannelMessageKeys[channelName].has(key)) continue;
+            seenChannelMessageKeys[channelName].add(key);
+            channelMessages[channelName].push(record);
+            changed = true;
+            await persistHistoryMessage(record);
+        }
+
+        lastChannelMsgCounts[channelName] = msgs.length;
+        if (changed) {
+            channelMessages[channelName].sort((a, b) => a.ts - b.ts);
+            renderChannelMessages(channelName);
         }
     } catch (e) {
         /* silently ignore */
@@ -950,7 +1092,9 @@ async function syncChannels() {
     if (successfulSyncs === 0) return;
 
     joinedChannels
-        .filter((name) => !names.has(name))
+        .filter(
+            (name) => !names.has(name) && !(channelMessages[name] || []).length,
+        )
         .forEach((name) => removeChannelFromSidebar(name));
     names.forEach((name) => ensureChannelInSidebar(name));
 }
@@ -1006,7 +1150,26 @@ async function renameChannel(oldName) {
         }
 
         const renamedChannel = data.channel || newName;
+        const owner = currentOwner();
+        const renamedMessages = (channelMessages[oldName] || []).map((msg) =>
+            Object.assign({}, msg, {
+                channel: renamedChannel,
+                to: msg.to === oldName ? renamedChannel : msg.to,
+            }),
+        );
+        if (window.ChatHistoryDB && owner) {
+            await window.ChatHistoryDB.renameChannel(
+                owner,
+                oldName,
+                renamedChannel,
+            );
+        }
         removeChannelFromSidebar(oldName);
+        channelMessages[renamedChannel] = renamedMessages;
+        seenChannelMessageKeys[renamedChannel] = new Set(
+            renamedMessages.map((msg) => msg.id),
+        );
+        lastChannelMsgCounts[renamedChannel] = renamedMessages.length;
         ensureChannelInSidebar(renamedChannel);
         await updateTrackerChannel("rename-channel", "POST", payload);
         await syncChannels();
@@ -1049,6 +1212,9 @@ async function deleteChannel(name) {
         }
 
         removeChannelFromSidebar(name);
+        if (window.ChatHistoryDB && currentOwner()) {
+            await window.ChatHistoryDB.deleteChannel(currentOwner(), name);
+        }
         await updateTrackerChannel("delete-channel", "DELETE", payload);
         await syncChannels();
         showToast(
@@ -1170,6 +1336,7 @@ async function loginUser() {
                 }),
             );
             applyAuthenticatedUser(loggedInUser);
+            await loadHistoryForOwner(loggedInUser);
             showToast("Welcome, " + loggedInUser + "!");
 
             // Auto-register peer right after login so the user
@@ -1215,6 +1382,7 @@ async function restoreSavedSession() {
 
         if (restoredUser) {
             applyAuthenticatedUser(restoredUser);
+            await loadHistoryForOwner(restoredUser);
             await registerPeer();
             await getPeerList(false);
             await syncChannels();
@@ -1228,6 +1396,8 @@ async function restoreSavedSession() {
 function logoutUser() {
     isAuthenticated = false;
     authToken = "";
+    resetHistoryMemory();
+    historyReadyForOwner = "";
     localStorage.removeItem("chat_auth");
     document.getElementById("authStatus").textContent = "Not logged in";
     document.getElementById("loginBtn").textContent = "Login";
