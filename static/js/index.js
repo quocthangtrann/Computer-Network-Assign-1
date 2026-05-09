@@ -1474,17 +1474,23 @@ async function restoreSavedSession() {
     }
 }
 
-async function logoutUser() {
+function postLogoutRequest(baseUrl, headers) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1500);
+
+    return fetch(`${baseUrl}/logout`, {
+        method: "POST",
+        headers,
+        credentials: "include",
+        signal: controller.signal,
+    })
+        .catch(() => {})
+        .finally(() => clearTimeout(timeoutId));
+}
+
+function logoutUser() {
     const logoutUrls = Array.from(new Set([getTrackerUrl(), getMyBaseUrl()]));
-    await Promise.all(
-        logoutUrls.map((baseUrl) =>
-            fetch(`${baseUrl}/logout`, {
-                method: "POST",
-                headers: authHeaders(),
-                credentials: "include",
-            }).catch(() => {}),
-        ),
-    );
+    const logoutHeaders = authHeaders();
 
     isAuthenticated = false;
     authToken = "";
@@ -1499,6 +1505,10 @@ async function logoutUser() {
     renderSignedOutState();
     updateUserDisplay();
     showToast("Logged out.");
+
+    Promise.all(
+        logoutUrls.map((baseUrl) => postLogoutRequest(baseUrl, logoutHeaders)),
+    ).catch(() => {});
 }
 
 function autoConfigure() {

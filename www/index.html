@@ -155,42 +155,9 @@
                     <h3>Connection Settings</h3>
                 </div>
 
-                <!-- My Identity -->
-                <div class="config-section">
-                    <h4>My Identity</h4>
-                    <div class="config-group">
-                        <label class="config-label">Username</label>
-                        <input
-                            type="text"
-                            class="config-input"
-                            id="myName"
-                            value=""
-                            placeholder="Login required"
-                            disabled
-                        />
-                    </div>
-                    <div class="config-row">
-                        <div class="config-group">
-                            <label class="config-label">LAN IP</label>
-                            <input
-                                type="text"
-                                class="config-input"
-                                id="myIp"
-                                value="127.0.0.1"
-                                readonly
-                            />
-                        </div>
-                        <div class="config-group">
-                            <label class="config-label">Port</label>
-                            <input
-                                type="number"
-                                class="config-input"
-                                id="myPort"
-                                value="2026"
-                            />
-                        </div>
-                    </div>
-                </div>
+                <input type="hidden" id="myName" value="" disabled />
+                <input type="hidden" id="myIp" value="127.0.0.1" />
+                <input type="hidden" id="myPort" value="2026" />
 
                 <!-- Tracker Server -->
                 <div class="config-section">
