@@ -52,6 +52,7 @@ def _default_state():
         "message_queues": {},
         "message_history": {},
         "sessions": {},
+        "channels": {"#general": []},
     }
 
 
@@ -60,6 +61,7 @@ def _ensure_state_shape(state):
     state.setdefault("message_queues", {})
     state.setdefault("message_history", {})
     state.setdefault("sessions", {})
+    state.setdefault("channels", {"#general": []})
     return state
 
 
@@ -636,6 +638,142 @@ def logout(headers="guest", body="anonymous"):
         "status": "ok",
         "message": "{} has been logged out".format(user),
         "__set_cookie__": "sessionid=; Max-Age=0; Path=/",
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+# Channel Management — join, list, send
+
+
+@app.route('/join-channel', methods=['POST'])
+def join_channel(headers="guest", body="anonymous"):
+
+    user = require_auth(headers)
+    if not user:
+        return unauthorized_result()
+
+    # Parse channel name from body
+    try:
+        payload = json.loads(body) if isinstance(body, str) else body
+    except Exception:
+        payload = {}
+    channel = payload.get("channel", "").strip()
+    if not channel:
+        result = {"status": "error", "message": "Missing channel name"}
+        return json.dumps(result).encode("utf-8")
+
+    # Normalize: ensure channel starts with #
+    if not channel.startswith("#"):
+        channel = "#" + channel
+
+    def _join(state):
+        state.setdefault("channels", {"#general": []})
+        # Create channel if it doesn't exist
+        if channel not in state["channels"]:
+            state["channels"][channel] = []
+        # Add user if not already a member
+        if user not in state["channels"][channel]:
+            state["channels"][channel].append(user)
+
+    _read_modify_write(_join)
+
+    print("[SampleApp] User '{}' joined channel '{}'".format(user, channel))
+    result = {
+        "status": "ok",
+        "message": "{} joined {}".format(user, channel),
+        "channel": channel,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route('/get-channels', methods=['GET'])
+def get_channels(headers="guest", body="anonymous"):
+
+    user = require_auth(headers)
+    if not user:
+        return unauthorized_result()
+
+    state = _read_state()
+    channels = state.get("channels", {"#general": []})
+
+    result = {
+        "status": "ok",
+        "channels": channels,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route('/send-channel', methods=['POST'])
+def send_channel(headers="guest", body="anonymous"):
+
+    user = require_auth(headers)
+    if not user:
+        return unauthorized_result()
+
+    # Parse request body
+    try:
+        payload = json.loads(body) if isinstance(body, str) else body
+    except Exception:
+        payload = {}
+    channel = payload.get("channel", "").strip()
+    msg_text = payload.get("msg", "").strip()
+
+    if not channel or not msg_text:
+        result = {"status": "error", "message": "Missing channel or msg"}
+        return json.dumps(result).encode("utf-8")
+
+    # Normalize channel name
+    if not channel.startswith("#"):
+        channel = "#" + channel
+
+    msg_entry = {
+        "id": uuid.uuid4().hex,
+        "from": user,
+        "to": channel,
+        "channel": channel,
+        "msg": msg_text,
+        "type": "channel",
+        "ts": time.time(),
+    }
+
+    def _send_to_channel(state):
+        state.setdefault("channels", {"#general": []})
+        state.setdefault("message_queues", {})
+
+        # Access control: channel must exist and sender must be a member
+        if channel not in state["channels"]:
+            return {"error": "Channel {} does not exist".format(channel)}
+        if user not in state["channels"][channel]:
+            return {"error": "You are not a member of {}".format(channel)}
+
+        # Fan out: append message to each member's queue
+        members = state["channels"][channel]
+        delivered = 0
+        for member in members:
+            state["message_queues"].setdefault(member, [])
+            state["message_queues"][member].append(msg_entry)
+            # Also append to their message history
+            _append_history(state, member, msg_entry)
+            delivered += 1
+
+        return {"delivered": delivered}
+
+    send_result = _read_modify_write(_send_to_channel)
+
+    if isinstance(send_result, dict) and "error" in send_result:
+        result = {
+            "status": "error",
+            "message": send_result["error"],
+            "__status__": 403,
+        }
+        return json.dumps(result).encode("utf-8")
+
+    print("[SampleApp] Channel message '{}' -> {} ({} members)".format(
+        user, channel, send_result.get("delivered", 0)))
+    result = {
+        "status": "ok",
+        "message": "Delivered to {} member(s) in {}".format(
+            send_result.get("delivered", 0), channel),
     }
     return json.dumps(result).encode("utf-8")
 

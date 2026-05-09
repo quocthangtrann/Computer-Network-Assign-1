@@ -2,24 +2,889 @@
   "active_peers": {
     "alice": {
       "virtual_ip": "192.168.99.132",
-      "joined_at": 1778311063.6057322,
-      "last_seen": 1778311092.735092
+      "joined_at": 1778314133.937023,
+      "last_seen": 1778314195.2658439
+    },
+    "admin": {
+      "virtual_ip": "192.168.33.35",
+      "joined_at": 1778314132.616247,
+      "last_seen": 1778314194.568251
+    },
+    "bob": {
+      "virtual_ip": "192.168.159.157",
+      "joined_at": 1778314152.051001,
+      "last_seen": 1778314196.147237
     },
     "eve": {
       "virtual_ip": "192.168.250.106",
-      "joined_at": 1778311083.427375,
-      "last_seen": 1778311091.508047
+      "joined_at": 1778314144.758411,
+      "last_seen": 1778314196.042021
     }
   },
   "message_queues": {
     "bob": [],
     "alice": [],
+    "admin": [],
     "eve": []
   },
   "sessions": {
     "8d47e8af339d43868cd277d5a4c01995": "admin",
     "9c206fb91939434e8be6a91ba94cedbd": "admin",
-    "dd4f561e5b8743a19bc1228f9f48709a": "alice",
-    "2eedcb224d3140f8a515bdbce72eff07": "eve"
+    "11051ad490254cc396d1a1d815b835b0": "alice",
+    "f3d92b90750d4bafa77fc1f5baedd884": "charlie",
+    "c0163ebb223548b4b5c7410de87ca4b5": "admin",
+    "0ca4b18c7f2943558c1d8ed55c0ac20e": "admin",
+    "bafeeab7f4884a318bcefdd20a60dc13": "bob",
+    "61b4ba4956fb4473b8fa84509b3297ab": "eve"
+  },
+  "message_history": {
+    "eve": [
+      {
+        "id": "2c373f8826284e579b1f004568bcd2ef",
+        "from": "admin",
+        "to": "broadcast",
+        "msg": "hi",
+        "type": "broadcast",
+        "ts": 1778312298.042161
+      },
+      {
+        "id": "550ee595b2ef4b5ab9bec3be6c0b3a3d",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hello all",
+        "type": "broadcast",
+        "ts": 1778312308.466252
+      },
+      {
+        "id": "c2f13132d718477993c15182ead63246",
+        "from": "eve",
+        "to": "alice",
+        "msg": "hi alice fuck u",
+        "type": "direct",
+        "ts": 1778312316.847523
+      },
+      {
+        "id": "6460c63d9bad476194297912423fa5d6",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u3053\u3093\u306b\u3061\u306f",
+        "type": "direct",
+        "ts": 1778312322.5034308
+      },
+      {
+        "id": "79ab7448e32f4d08970d770c83ba6d9f",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b",
+        "type": "direct",
+        "ts": 1778312324.850935
+      },
+      {
+        "id": "c6259117b36441ab9fad0ebd0d1151fd",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b\u4eee\u9762",
+        "type": "direct",
+        "ts": 1778312343.879903
+      },
+      {
+        "id": "e18aa83f4b21430380dca70e5893abbd",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u30af\u30bd\u91ce\u90ce",
+        "type": "direct",
+        "ts": 1778312348.280401
+      },
+      {
+        "id": "dc4920879b3540d5b7d2cec7b110513e",
+        "from": "alice",
+        "to": "broadcast",
+        "msg": "\u304f\u305d",
+        "type": "broadcast",
+        "ts": 1778312378.4999838
+      },
+      {
+        "id": "d60ca1881e784ea4b40a91c473f43553",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b",
+        "type": "direct",
+        "ts": 1778312389.6164732
+      },
+      {
+        "id": "bb08596ae17148169856b59e2a20a2ac",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hei",
+        "type": "channel",
+        "ts": 1778314010.030734
+      },
+      {
+        "id": "fd4f6d0488b04719990dccbd1c9ff460",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hi channel",
+        "type": "broadcast",
+        "ts": 1778314012.3097851
+      },
+      {
+        "id": "1d240a9bbcff4f74a61ec9f8738abb0b",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello",
+        "type": "channel",
+        "ts": 1778314024.186639
+      },
+      {
+        "id": "7507a087f5fa4fa6b8c1a2032dc9b5df",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello alice",
+        "type": "channel",
+        "ts": 1778314030.138016
+      },
+      {
+        "id": "8d4a4d93ae2d45daa360e9de72909c83",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "cho t\u00f4i xin v\u00e0o kubu \u0111i",
+        "type": "channel",
+        "ts": 1778314034.7469509
+      },
+      {
+        "id": "0428742f19204c63ba445f224401534d",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314035.5723531
+      },
+      {
+        "id": "16e54e821dad4fe29835c832f5b8bbb8",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello]",
+        "type": "channel",
+        "ts": 1778314041.5153768
+      },
+      {
+        "id": "d16eaeb888294a7180c13d493d32dfe4",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "what the fuck alice",
+        "type": "channel",
+        "ts": 1778314041.875822
+      },
+      {
+        "id": "b5b2124ae72a473a9b1057e3a6a62648",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "stop saying nonsense",
+        "type": "channel",
+        "ts": 1778314046.3907478
+      },
+      {
+        "id": "d6b3023b57494c94ad393189020649ef",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hiii",
+        "type": "channel",
+        "ts": 1778314051.220872
+      },
+      {
+        "id": "81547ac33ecf46bf9c714ddc88513045",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I love kubu.com",
+        "type": "channel",
+        "ts": 1778314056.420513
+      },
+      {
+        "id": "71f6742206a74ce3b7f1c63579260640",
+        "from": "eve",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "hello channel",
+        "type": "channel",
+        "ts": 1778314062.3276732
+      },
+      {
+        "id": "a9d1cfd1f1044c6d96ed172a9df28451",
+        "from": "admin",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "hello",
+        "type": "channel",
+        "ts": 1778314062.864989
+      },
+      {
+        "id": "20d472973ed74a5d97177eb69fdf820c",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I have heard it is great company",
+        "type": "channel",
+        "ts": 1778314066.0135438
+      },
+      {
+        "id": "7f227577030f49ae91970e902dd43520",
+        "from": "alice",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "Hi",
+        "type": "channel",
+        "ts": 1778314163.257838
+      },
+      {
+        "id": "6632bd46e47e4c1b9b1e3cd15a213bc8",
+        "from": "admin",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778314164.6176698
+      },
+      {
+        "id": "04c3b0433ef240e780f7c05cfbfd8052",
+        "from": "bob",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314165.804687
+      }
+    ],
+    "admin": [
+      {
+        "id": "2c373f8826284e579b1f004568bcd2ef",
+        "from": "admin",
+        "to": "broadcast",
+        "msg": "hi",
+        "type": "broadcast",
+        "ts": 1778312298.042161
+      },
+      {
+        "id": "550ee595b2ef4b5ab9bec3be6c0b3a3d",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hello all",
+        "type": "broadcast",
+        "ts": 1778312308.466252
+      },
+      {
+        "id": "dc4920879b3540d5b7d2cec7b110513e",
+        "from": "alice",
+        "to": "broadcast",
+        "msg": "\u304f\u305d",
+        "type": "broadcast",
+        "ts": 1778312378.4999838
+      },
+      {
+        "id": "914dd3f4d8c04d42b44d982ab6e6b808",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778313477.210654
+      },
+      {
+        "id": "2f54f46f0e5f470794540f6bcaee84d2",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778313959.9927979
+      },
+      {
+        "id": "bb27c4a795f24e34815b5500b2a034c2",
+        "from": "admin",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778313972.996276
+      },
+      {
+        "id": "bb08596ae17148169856b59e2a20a2ac",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hei",
+        "type": "channel",
+        "ts": 1778314010.030734
+      },
+      {
+        "id": "fd4f6d0488b04719990dccbd1c9ff460",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hi channel",
+        "type": "broadcast",
+        "ts": 1778314012.3097851
+      },
+      {
+        "id": "1d240a9bbcff4f74a61ec9f8738abb0b",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello",
+        "type": "channel",
+        "ts": 1778314024.186639
+      },
+      {
+        "id": "7507a087f5fa4fa6b8c1a2032dc9b5df",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello alice",
+        "type": "channel",
+        "ts": 1778314030.138016
+      },
+      {
+        "id": "8d4a4d93ae2d45daa360e9de72909c83",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "cho t\u00f4i xin v\u00e0o kubu \u0111i",
+        "type": "channel",
+        "ts": 1778314034.7469509
+      },
+      {
+        "id": "0428742f19204c63ba445f224401534d",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314035.5723531
+      },
+      {
+        "id": "16e54e821dad4fe29835c832f5b8bbb8",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello]",
+        "type": "channel",
+        "ts": 1778314041.5153768
+      },
+      {
+        "id": "d16eaeb888294a7180c13d493d32dfe4",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "what the fuck alice",
+        "type": "channel",
+        "ts": 1778314041.875822
+      },
+      {
+        "id": "b5b2124ae72a473a9b1057e3a6a62648",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "stop saying nonsense",
+        "type": "channel",
+        "ts": 1778314046.3907478
+      },
+      {
+        "id": "d6b3023b57494c94ad393189020649ef",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hiii",
+        "type": "channel",
+        "ts": 1778314051.220872
+      },
+      {
+        "id": "81547ac33ecf46bf9c714ddc88513045",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I love kubu.com",
+        "type": "channel",
+        "ts": 1778314056.420513
+      },
+      {
+        "id": "71f6742206a74ce3b7f1c63579260640",
+        "from": "eve",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "hello channel",
+        "type": "channel",
+        "ts": 1778314062.3276732
+      },
+      {
+        "id": "a9d1cfd1f1044c6d96ed172a9df28451",
+        "from": "admin",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "hello",
+        "type": "channel",
+        "ts": 1778314062.864989
+      },
+      {
+        "id": "20d472973ed74a5d97177eb69fdf820c",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I have heard it is great company",
+        "type": "channel",
+        "ts": 1778314066.0135438
+      },
+      {
+        "id": "7f227577030f49ae91970e902dd43520",
+        "from": "alice",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "Hi",
+        "type": "channel",
+        "ts": 1778314163.257838
+      },
+      {
+        "id": "6632bd46e47e4c1b9b1e3cd15a213bc8",
+        "from": "admin",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778314164.6176698
+      },
+      {
+        "id": "04c3b0433ef240e780f7c05cfbfd8052",
+        "from": "bob",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314165.804687
+      },
+      {
+        "id": "0148aef01e2340858f1c5f72529da692",
+        "from": "bob",
+        "to": "admin",
+        "msg": "herro",
+        "type": "direct",
+        "ts": 1778314184.5185769
+      }
+    ],
+    "alice": [
+      {
+        "id": "550ee595b2ef4b5ab9bec3be6c0b3a3d",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hello all",
+        "type": "broadcast",
+        "ts": 1778312308.466252
+      },
+      {
+        "id": "c2f13132d718477993c15182ead63246",
+        "from": "eve",
+        "to": "alice",
+        "msg": "hi alice fuck u",
+        "type": "direct",
+        "ts": 1778312316.847523
+      },
+      {
+        "id": "6460c63d9bad476194297912423fa5d6",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u3053\u3093\u306b\u3061\u306f",
+        "type": "direct",
+        "ts": 1778312322.5034308
+      },
+      {
+        "id": "79ab7448e32f4d08970d770c83ba6d9f",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b",
+        "type": "direct",
+        "ts": 1778312324.850935
+      },
+      {
+        "id": "c6259117b36441ab9fad0ebd0d1151fd",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b\u4eee\u9762",
+        "type": "direct",
+        "ts": 1778312343.879903
+      },
+      {
+        "id": "e18aa83f4b21430380dca70e5893abbd",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u30af\u30bd\u91ce\u90ce",
+        "type": "direct",
+        "ts": 1778312348.280401
+      },
+      {
+        "id": "dc4920879b3540d5b7d2cec7b110513e",
+        "from": "alice",
+        "to": "broadcast",
+        "msg": "\u304f\u305d",
+        "type": "broadcast",
+        "ts": 1778312378.4999838
+      },
+      {
+        "id": "d60ca1881e784ea4b40a91c473f43553",
+        "from": "alice",
+        "to": "eve",
+        "msg": "\u5909\u614b",
+        "type": "direct",
+        "ts": 1778312389.6164732
+      },
+      {
+        "id": "382fb385b3e8406199fae3f540c88255",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dfkjsdfjsdf",
+        "type": "direct",
+        "ts": 1778312790.925214
+      },
+      {
+        "id": "13faec49d7ca4dca927c4af4bcc61d05",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dsnjfhfgh",
+        "type": "direct",
+        "ts": 1778312801.216495
+      },
+      {
+        "id": "bbb6b8bb21fd4775858336251aff7715",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dfslkdfjkfjg",
+        "type": "direct",
+        "ts": 1778312812.4693289
+      },
+      {
+        "id": "67547cc25aa1492ab8fc827b6a25a8e0",
+        "from": "bob",
+        "to": "alice",
+        "msg": "1",
+        "type": "direct",
+        "ts": 1778312823.4357262
+      },
+      {
+        "id": "0d108bd055d04b809600549c316cbbbf",
+        "from": "bob",
+        "to": "alice",
+        "msg": "2",
+        "type": "direct",
+        "ts": 1778312826.096985
+      },
+      {
+        "id": "b7d8efade9224e5da0f8a66017ab1de8",
+        "from": "bob",
+        "to": "alice",
+        "msg": "3",
+        "type": "direct",
+        "ts": 1778312828.1872709
+      },
+      {
+        "id": "1982d31c8acb41a4a3063fc5829f508b",
+        "from": "bob",
+        "to": "alice",
+        "msg": "4",
+        "type": "direct",
+        "ts": 1778312833.554941
+      },
+      {
+        "id": "2d51f326974d43a992f2947d97e68066",
+        "from": "bob",
+        "to": "alice",
+        "msg": "5",
+        "type": "direct",
+        "ts": 1778312835.394063
+      },
+      {
+        "id": "6b060ffbe7c6478ba262ac3d3d450a6f",
+        "from": "bob",
+        "to": "alice",
+        "msg": "6",
+        "type": "direct",
+        "ts": 1778312836.935173
+      },
+      {
+        "id": "057126a9c2eb4b73b60965d1c9990eec",
+        "from": "alice",
+        "to": "bob",
+        "msg": "hjuhuhh",
+        "type": "direct",
+        "ts": 1778312873.301292
+      },
+      {
+        "id": "3ad0a4bd5a1e4d2588e9bc36e8ec99d4",
+        "from": "alice",
+        "to": "bob",
+        "msg": "huyhhyh",
+        "type": "direct",
+        "ts": 1778312895.9514802
+      },
+      {
+        "id": "fd4f6d0488b04719990dccbd1c9ff460",
+        "from": "eve",
+        "to": "broadcast",
+        "msg": "hi channel",
+        "type": "broadcast",
+        "ts": 1778314012.3097851
+      },
+      {
+        "id": "1d240a9bbcff4f74a61ec9f8738abb0b",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello",
+        "type": "channel",
+        "ts": 1778314024.186639
+      },
+      {
+        "id": "7507a087f5fa4fa6b8c1a2032dc9b5df",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello alice",
+        "type": "channel",
+        "ts": 1778314030.138016
+      },
+      {
+        "id": "8d4a4d93ae2d45daa360e9de72909c83",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "cho t\u00f4i xin v\u00e0o kubu \u0111i",
+        "type": "channel",
+        "ts": 1778314034.7469509
+      },
+      {
+        "id": "0428742f19204c63ba445f224401534d",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314035.5723531
+      },
+      {
+        "id": "16e54e821dad4fe29835c832f5b8bbb8",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hello]",
+        "type": "channel",
+        "ts": 1778314041.5153768
+      },
+      {
+        "id": "d16eaeb888294a7180c13d493d32dfe4",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "what the fuck alice",
+        "type": "channel",
+        "ts": 1778314041.875822
+      },
+      {
+        "id": "b5b2124ae72a473a9b1057e3a6a62648",
+        "from": "eve",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "stop saying nonsense",
+        "type": "channel",
+        "ts": 1778314046.3907478
+      },
+      {
+        "id": "d6b3023b57494c94ad393189020649ef",
+        "from": "admin",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "hiii",
+        "type": "channel",
+        "ts": 1778314051.220872
+      },
+      {
+        "id": "81547ac33ecf46bf9c714ddc88513045",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I love kubu.com",
+        "type": "channel",
+        "ts": 1778314056.420513
+      },
+      {
+        "id": "20d472973ed74a5d97177eb69fdf820c",
+        "from": "alice",
+        "to": "#general",
+        "channel": "#general",
+        "msg": "I have heard it is great company",
+        "type": "channel",
+        "ts": 1778314066.0135438
+      },
+      {
+        "id": "7f227577030f49ae91970e902dd43520",
+        "from": "alice",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "Hi",
+        "type": "channel",
+        "ts": 1778314163.257838
+      },
+      {
+        "id": "6632bd46e47e4c1b9b1e3cd15a213bc8",
+        "from": "admin",
+        "to": "#handsome-khang",
+        "channel": "#handsome-khang",
+        "msg": "hi",
+        "type": "channel",
+        "ts": 1778314164.6176698
+      }
+    ],
+    "bob": [
+      {
+        "id": "dc4920879b3540d5b7d2cec7b110513e",
+        "from": "alice",
+        "to": "broadcast",
+        "msg": "\u304f\u305d",
+        "type": "broadcast",
+        "ts": 1778312378.4999838
+      },
+      {
+        "id": "382fb385b3e8406199fae3f540c88255",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dfkjsdfjsdf",
+        "type": "direct",
+        "ts": 1778312790.925214
+      },
+      {
+        "id": "13faec49d7ca4dca927c4af4bcc61d05",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dsnjfhfgh",
+        "type": "direct",
+        "ts": 1778312801.216495
+      },
+      {
+        "id": "bbb6b8bb21fd4775858336251aff7715",
+        "from": "bob",
+        "to": "alice",
+        "msg": "dfslkdfjkfjg",
+        "type": "direct",
+        "ts": 1778312812.4693289
+      },
+      {
+        "id": "67547cc25aa1492ab8fc827b6a25a8e0",
+        "from": "bob",
+        "to": "alice",
+        "msg": "1",
+        "type": "direct",
+        "ts": 1778312823.4357262
+      },
+      {
+        "id": "0d108bd055d04b809600549c316cbbbf",
+        "from": "bob",
+        "to": "alice",
+        "msg": "2",
+        "type": "direct",
+        "ts": 1778312826.096985
+      },
+      {
+        "id": "b7d8efade9224e5da0f8a66017ab1de8",
+        "from": "bob",
+        "to": "alice",
+        "msg": "3",
+        "type": "direct",
+        "ts": 1778312828.1872709
+      },
+      {
+        "id": "1982d31c8acb41a4a3063fc5829f508b",
+        "from": "bob",
+        "to": "alice",
+        "msg": "4",
+        "type": "direct",
+        "ts": 1778312833.554941
+      },
+      {
+        "id": "2d51f326974d43a992f2947d97e68066",
+        "from": "bob",
+        "to": "alice",
+        "msg": "5",
+        "type": "direct",
+        "ts": 1778312835.394063
+      },
+      {
+        "id": "6b060ffbe7c6478ba262ac3d3d450a6f",
+        "from": "bob",
+        "to": "alice",
+        "msg": "6",
+        "type": "direct",
+        "ts": 1778312836.935173
+      },
+      {
+        "id": "057126a9c2eb4b73b60965d1c9990eec",
+        "from": "alice",
+        "to": "bob",
+        "msg": "hjuhuhh",
+        "type": "direct",
+        "ts": 1778312873.301292
+      },
+      {
+        "id": "3ad0a4bd5a1e4d2588e9bc36e8ec99d4",
+        "from": "alice",
+        "to": "bob",
+        "msg": "huyhhyh",
+        "type": "direct",
+        "ts": 1778312895.9514802
+      },
+      {
+        "id": "04c3b0433ef240e780f7c05cfbfd8052",
+        "from": "bob",
+        "to": "#hello",
+        "channel": "#hello",
+        "msg": "herro",
+        "type": "channel",
+        "ts": 1778314165.804687
+      },
+      {
+        "id": "0148aef01e2340858f1c5f72529da692",
+        "from": "bob",
+        "to": "admin",
+        "msg": "herro",
+        "type": "direct",
+        "ts": 1778314184.5185769
+      }
+    ],
+    "charlie": []
+  },
+  "channels": {
+    "#general": [
+      "admin",
+      "eve",
+      "alice",
+      "bob"
+    ],
+    "#hello": [
+      "admin",
+      "eve",
+      "bob"
+    ],
+    "#handsome-khang": [
+      "alice",
+      "eve",
+      "admin",
+      "bob"
+    ],
+    "#hi": [
+      "eve",
+      "bob"
+    ]
   }
 }

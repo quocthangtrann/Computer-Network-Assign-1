@@ -28,8 +28,8 @@
                 <ul class="channel-list" id="directMsgList">
                     <li
                         class="channel-item active"
-                        data-view="direct"
-                        onclick="switchView('direct')"
+                        data-view="all"
+                        onclick="switchView('all')"
                     >
                         <svg
                             class="menu-icon-heart"
@@ -45,6 +45,18 @@
                         <span>All Messages</span>
                     </li>
                 </ul>
+
+                <!-- Channel List -->
+                <div class="sidebar-section">
+                    <div class="sidebar-section-title">Channels</div>
+                </div>
+                <div id="channelListDisplay" style="padding:0 8px;"></div>
+                <div style="padding:6px 10px;">
+                    <div style="display:flex;gap:4px;">
+                        <input type="text" id="newChannelInput" class="config-input" placeholder="#channel-name" style="font-size:12px;padding:6px 8px;flex:1;">
+                        <button class="btn btn-primary btn-sm" onclick="createAndJoinChannel()" style="font-size:11px;white-space:nowrap;">+ Join</button>
+                    </div>
+                </div>
 
                 <!-- User Profile -->
                 <div class="user-profile">
@@ -342,13 +354,23 @@
             // STATE
             // ============================================================
             let isAuthenticated = false;
-            let myUsername = "";
-            let myVirtualIp = "";
-            let authToken = ""; // Base64-encoded "user:pass" for Authorization header
-            let knownPeers = {}; // { username: { virtual_ip } }
+            let myUsername = '';
+            let myVirtualIp = '';
+            let authToken = '';    // Base64-encoded "user:pass" for Authorization header
+            let knownPeers = {};   // { username: { virtual_ip } }
             let pollingInterval = null;
             let peerPollingInterval = null;
-            let seenMessageKeys = new Set();
+            let channelPollingInterval = null;
+
+            // Channel state
+            let knownChannels = {};   // { "#general": ["alice", "bob"], ... }
+            let currentChatType = 'all';     // 'all', 'direct', or 'channel'
+            let currentChatTarget = '';      // peer username or channel name
+            let channelUnread = {};          // { "#general": 3, ... }
+
+            // Local message accumulator — all polled messages live here
+            let localMessageHistory = [];
+            let seenMessageIds = new Set();  // dedup by message id/key
 
             // Returns headers object with Authorization if logged in
             function authHeaders(extra) {
@@ -419,16 +441,16 @@
             // VIEW SWITCHING
             // ============================================================
             function switchView(view) {
-                document
-                    .querySelectorAll(".channel-item")
-                    .forEach((el) => el.classList.remove("active"));
-                const target = document.querySelector(`[data-view="${view}"]`);
-                if (target) target.classList.add("active");
-
-                document.getElementById("chatTitle").textContent =
-                    "All Messages";
-                document.getElementById("chatSubtitle").textContent =
-                    "Direct & Broadcast messages";
+                if (view === 'all') {
+                    currentChatType = 'all';
+                    currentChatTarget = '';
+                    document.getElementById('chatTitle').textContent = 'All Messages';
+                    document.getElementById('chatSubtitle').textContent = 'Direct, Broadcast & Channel messages';
+                    document.getElementById('targetPeerSelect').value = '';
+                    renderChannelList();
+                    renderPeerList();
+                    renderChatBox();
+                }
             }
 
             // ============================================================
@@ -538,6 +560,7 @@
 
                         // Immediately fetch peer list
                         await getPeerList();
+                        await getChannelList();
                     } else {
                         authToken = "";
                         errDiv.textContent =
@@ -570,26 +593,34 @@
             // Force-reset UI to logged-out state (no server call)
             function forceLogoutUI(reason) {
                 isAuthenticated = false;
-                myUsername = "";
-                myVirtualIp = "";
-                authToken = "";
-                localStorage.removeItem("chat_auth");
+                myUsername = '';
+                myVirtualIp = '';
+                authToken = '';
+                currentChatType = 'all';
+                currentChatTarget = '';
+                knownChannels = {};
+                channelUnread = {};
+                localMessageHistory = [];
+                seenMessageIds.clear();
+                localStorage.removeItem('chat_auth');
                 stopPolling();
 
-                document.getElementById("authStatus").textContent =
-                    "Not logged in";
-                document.getElementById("loginBtn").textContent = "Login";
-                document.getElementById("myName").value = "";
-                document.getElementById("myVirtualIp").value = "—";
-                seenMessageKeys.clear();
-                document.getElementById("chatMessages").innerHTML =
+                document.getElementById('authStatus').textContent =
+                    'Not logged in';
+                document.getElementById('loginBtn').textContent = 'Login';
+                document.getElementById('myName').value = '';
+                document.getElementById('myVirtualIp').value = '—';
+                document.getElementById('chatMessages').innerHTML =
                     '<div class="msg-system">Welcome to HybridChat! Login to start chatting.</div>';
-                document.getElementById("peerListDisplay").innerHTML =
+                document.getElementById('peerListDisplay').innerHTML =
                     '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">No peers online yet.<br>Login to see active users.</div>';
-                document.getElementById("targetPeerSelect").innerHTML =
+                document.getElementById('targetPeerSelect').innerHTML =
                     '<option value="">Select peer...</option>';
+                document.getElementById('channelListDisplay').innerHTML = '';
+                document.getElementById('chatTitle').textContent = 'All Messages';
+                document.getElementById('chatSubtitle').textContent = 'Direct, Broadcast & Channel messages';
                 updateUserDisplay();
-                setStatus("Not connected", "offline");
+                setStatus('Not connected', 'offline');
                 if (reason) showToast(reason);
             }
 
@@ -639,7 +670,7 @@
             }
 
             function renderPeerList() {
-                const container = document.getElementById("peerListDisplay");
+                const container = document.getElementById('peerListDisplay');
 
                 if (Object.keys(knownPeers).length === 0) {
                     container.innerHTML =
@@ -647,26 +678,165 @@
                     return;
                 }
 
-                container.innerHTML = "";
+                container.innerHTML = '';
                 for (const [name, info] of Object.entries(knownPeers)) {
                     const color = getPeerColor(name);
                     const isSelf = name === myUsername;
-                    const item = document.createElement("div");
-                    item.className = "peer-item";
+                    const isActive = currentChatType === 'direct' && currentChatTarget === name;
+                    const item = document.createElement('div');
+                    item.className = 'peer-item' + (isActive ? ' active-chat' : '');
+                    if (isActive) item.style.background = 'var(--bg-tertiary)';
                     if (!isSelf) {
-                        item.onclick = () => {
-                            document.getElementById("targetPeerSelect").value =
-                                name;
-                            showToast("Target set to " + name);
-                        };
+                        item.onclick = () => handlePeerClick(name);
+                        item.style.cursor = 'pointer';
                     }
                     item.innerHTML = `
                     <div class="peer-avatar" style="background:${color}">${name.charAt(0).toUpperCase()}</div>
-                    <span class="peer-name">${escapeHtml(name)}${isSelf ? " (You)" : ""}</span>
-                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.virtual_ip || "—")}</span>
+                    <span class="peer-name">${escapeHtml(name)}${isSelf ? ' (You)' : ''}</span>
+                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.virtual_ip || '—')}</span>
                     <div class="peer-status-dot"></div>
                 `;
                     container.appendChild(item);
+                }
+            }
+
+            function handlePeerClick(peerName) {
+                currentChatType = 'direct';
+                currentChatTarget = peerName;
+                document.getElementById('targetPeerSelect').value = peerName;
+                document.getElementById('chatTitle').textContent = 'Chatting with ' + peerName;
+                document.getElementById('chatSubtitle').textContent = 'Direct messages';
+                renderPeerList();
+                renderChannelList();
+                renderChatBox();
+                showToast('Target set to ' + peerName);
+            }
+
+            // ============================================================
+            // CHANNEL LIST
+            // ============================================================
+
+            async function getChannelList() {
+                if (!isAuthenticated) return;
+                try {
+                    const res = await fetch('/get-channels', {
+                        headers: authHeaders(),
+                        credentials: 'include'
+                    });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (data.status === 'ok' && data.channels) {
+                        knownChannels = data.channels;
+                        renderChannelList();
+                    }
+                } catch (_) { }
+            }
+
+            function renderChannelList() {
+                const container = document.getElementById('channelListDisplay');
+                const channelNames = Object.keys(knownChannels);
+
+                if (channelNames.length === 0) {
+                    container.innerHTML = '<div style="padding:8px 12px;color:var(--text-muted);font-size:12px;">No channels yet.</div>';
+                    return;
+                }
+
+                container.innerHTML = '';
+                for (const chName of channelNames) {
+                    const members = knownChannels[chName] || [];
+                    const isMember = members.includes(myUsername);
+                    const isActive = currentChatType === 'channel' && currentChatTarget === chName;
+                    const unread = channelUnread[chName] || 0;
+
+                    const item = document.createElement('div');
+                    item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;cursor:pointer;transition:background 0.15s;margin-bottom:2px;';
+                    if (isActive) item.style.background = 'var(--bg-tertiary)';
+                    item.onmouseenter = () => { if (!isActive) item.style.background = 'var(--bg-secondary)'; };
+                    item.onmouseleave = () => { if (!isActive) item.style.background = ''; };
+                    item.onclick = () => handleChannelClick(chName);
+
+                    const badge = unread > 0 && !isActive
+                        ? `<span style="background:var(--red);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-left:auto;">${unread}</span>`
+                        : '';
+                    const memberBadge = isMember
+                        ? '<span style="font-size:9px;color:var(--green);">✓</span>'
+                        : '<span style="font-size:9px;color:var(--text-muted);">join</span>';
+
+                    item.innerHTML = `
+                        <span style="font-size:14px;">#</span>
+                        <span style="flex:1;font-size:13px;font-weight:${isActive ? '600' : '400'};color:${isActive ? 'var(--accent-light)' : 'var(--text-primary)'};">${escapeHtml(chName.replace('#',''))}</span>
+                        ${memberBadge}
+                        <span style="font-size:10px;color:var(--text-muted);">${members.length}</span>
+                        ${badge}
+                    `;
+                    container.appendChild(item);
+                }
+            }
+
+            async function handleChannelClick(channelName) {
+                // Auto-join if not a member
+                const members = knownChannels[channelName] || [];
+                if (!members.includes(myUsername)) {
+                    try {
+                        const res = await fetch('/join-channel', {
+                            method: 'POST',
+                            headers: authHeaders({ 'Content-Type': 'application/json' }),
+                            body: JSON.stringify({ channel: channelName }),
+                            credentials: 'include'
+                        });
+                        const data = await res.json();
+                        if (data.status === 'ok') {
+                            showToast('Joined ' + channelName);
+                            // Update local state
+                            if (!knownChannels[channelName]) knownChannels[channelName] = [];
+                            knownChannels[channelName].push(myUsername);
+                        } else {
+                            showToast('Failed: ' + (data.message || 'Error'));
+                            return;
+                        }
+                    } catch (e) {
+                        showToast('Error joining: ' + e.message);
+                        return;
+                    }
+                }
+
+                // Switch context to this channel
+                currentChatType = 'channel';
+                currentChatTarget = channelName;
+                channelUnread[channelName] = 0;
+
+                document.getElementById('chatTitle').textContent = 'Channel: ' + channelName;
+                document.getElementById('chatSubtitle').textContent = (knownChannels[channelName] || []).length + ' members';
+                document.getElementById('targetPeerSelect').value = '';
+
+                renderChannelList();
+                renderPeerList();
+                renderChatBox();
+            }
+
+            async function createAndJoinChannel() {
+                let name = document.getElementById('newChannelInput').value.trim();
+                if (!name) return;
+                if (!name.startsWith('#')) name = '#' + name;
+
+                try {
+                    const res = await fetch('/join-channel', {
+                        method: 'POST',
+                        headers: authHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({ channel: name }),
+                        credentials: 'include'
+                    });
+                    const data = await res.json();
+                    if (data.status === 'ok') {
+                        document.getElementById('newChannelInput').value = '';
+                        showToast('Joined ' + data.channel);
+                        await getChannelList();
+                        handleChannelClick(data.channel);
+                    } else {
+                        showToast('Error: ' + (data.message || 'Failed'));
+                    }
+                } catch (e) {
+                    showToast('Error: ' + e.message);
                 }
             }
 
@@ -703,42 +873,69 @@
                 setTimeout(() => (_sending = false), 500);
 
                 const msgText = document
-                    .getElementById("messageInput")
+                    .getElementById('messageInput')
                     .value.trim();
                 if (!msgText) return;
 
+                // Route based on current chat context
+                if (currentChatType === 'channel' && currentChatTarget) {
+                    await sendChannelMsg(currentChatTarget, msgText);
+                    return;
+                }
+
                 const toUser =
-                    document.getElementById("targetPeerSelect").value;
+                    document.getElementById('targetPeerSelect').value;
                 if (!toUser) {
-                    showToast("Please select a peer to send to!");
+                    showToast('Please select a peer to send to!');
                     return;
                 }
 
                 try {
-                    const res = await fetch("/send-peer", {
-                        method: "POST",
+                    const res = await fetch('/send-peer', {
+                        method: 'POST',
                         headers: authHeaders({
-                            "Content-Type": "application/json",
+                            'Content-Type': 'application/json',
                         }),
                         body: JSON.stringify({
                             from: myUsername,
                             to: toUser,
                             msg: msgText,
                         }),
-                        credentials: "include",
+                        credentials: 'include',
                     });
 
                     if (res.ok) {
-                        document.getElementById("messageInput").value = "";
-                        // Message will appear via the next poll cycle (within 1s)
+                        document.getElementById('messageInput').value = '';
                     } else {
                         const data = await res.json().catch(() => ({}));
                         showToast(
-                            "Failed: " + (data.message || "HTTP " + res.status),
+                            'Failed: ' + (data.message || 'HTTP ' + res.status),
                         );
                     }
                 } catch (e) {
-                    showToast("Connection error: " + e.message);
+                    showToast('Connection error: ' + e.message);
+                }
+            }
+
+            async function sendChannelMsg(channel, msgText) {
+                try {
+                    const res = await fetch('/send-channel', {
+                        method: 'POST',
+                        headers: authHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            channel: channel,
+                            msg: msgText
+                        }),
+                        credentials: 'include'
+                    });
+                    if (res.ok) {
+                        document.getElementById('messageInput').value = '';
+                    } else {
+                        const data = await res.json().catch(() => ({}));
+                        showToast('Failed: ' + (data.message || 'HTTP ' + res.status));
+                    }
+                } catch (e) {
+                    showToast('Error: ' + e.message);
                 }
             }
 
@@ -772,73 +969,128 @@
             }
 
             // ============================================================
-            // MESSAGE RENDERING
+            // MESSAGE RENDERING — localMessageHistory + filter
             // ============================================================
 
             function messageKey(msgObj) {
                 if (msgObj.id) return msgObj.id;
                 return [
-                    msgObj.from || "",
-                    msgObj.to || "",
-                    msgObj.type || "",
-                    msgObj.ts || "",
-                    msgObj.msg || "",
-                ].join("|");
+                    msgObj.from || '',
+                    msgObj.to || '',
+                    msgObj.type || '',
+                    msgObj.ts || '',
+                    msgObj.msg || '',
+                ].join('|');
             }
 
-            function resetMessageView(emptyText) {
-                seenMessageKeys.clear();
-                document.getElementById("chatMessages").innerHTML = "";
-                if (emptyText) addSystemMessage(emptyText);
-            }
-
-            function addMessage(msgObj) {
+            /**
+             * Push a message into localMessageHistory (deduped).
+             * Returns true if it was new.
+             */
+            function accumulateMessage(msgObj) {
                 const key = messageKey(msgObj);
-                if (seenMessageKeys.has(key)) return false;
-                seenMessageKeys.add(key);
+                if (seenMessageIds.has(key)) return false;
+                seenMessageIds.add(key);
+                localMessageHistory.push(msgObj);
+                return true;
+            }
 
-                const box = document.getElementById("chatMessages");
-                const group = document.createElement("div");
-                group.className = "msg-group";
+            /**
+             * Filter localMessageHistory based on current view context.
+             */
+            function getFilteredMessages() {
+                if (currentChatType === 'all') {
+                    return localMessageHistory;
+                }
+                if (currentChatType === 'channel') {
+                    return localMessageHistory.filter(m =>
+                        // Show channel messages for this channel + broadcasts
+                        (m.type === 'channel' && m.channel === currentChatTarget) ||
+                        m.type === 'broadcast'
+                    );
+                }
+                if (currentChatType === 'direct') {
+                    return localMessageHistory.filter(m =>
+                        // Show direct messages between me and the target peer
+                        (m.type === 'direct' && (
+                            (m.from === currentChatTarget && m.to === myUsername) ||
+                            (m.from === myUsername && m.to === currentChatTarget) ||
+                            (m.from === currentChatTarget || m.to === currentChatTarget)
+                        )) ||
+                        // Also show broadcasts so they're never missed
+                        m.type === 'broadcast'
+                    );
+                }
+                return localMessageHistory;
+            }
 
-                const text = msgObj.msg || "";
-                const type = msgObj.type || "direct";
-                const badgeLabel = type.charAt(0).toUpperCase() + type.slice(1);
-                const senderName = msgObj.from || "Unknown";
+            /**
+             * Re-render the chat box from localMessageHistory with filtering.
+             */
+            function renderChatBox() {
+                const box = document.getElementById('chatMessages');
+                box.innerHTML = '';
+
+                const filtered = getFilteredMessages();
+
+                if (filtered.length === 0) {
+                    addSystemMessage('No messages yet in this view.');
+                    return;
+                }
+
+                for (const msgObj of filtered) {
+                    renderSingleMessage(box, msgObj);
+                }
+                box.scrollTop = box.scrollHeight;
+            }
+
+            /**
+             * Render a single message DOM element into a container.
+             */
+            function renderSingleMessage(box, msgObj) {
+                const group = document.createElement('div');
+                group.className = 'msg-group';
+
+                const text = msgObj.msg || '';
+                const type = msgObj.type || 'direct';
+                let badgeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+                // For channel messages, show the channel name in badge
+                if (type === 'channel' && msgObj.channel) {
+                    badgeLabel = msgObj.channel;
+                }
+                const senderName = msgObj.from || 'Unknown';
                 const color = getPeerColor(senderName);
 
                 // Format timestamp
                 let time;
                 if (msgObj.ts) {
                     time = new Date(msgObj.ts * 1000).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
+                        hour: '2-digit',
+                        minute: '2-digit',
                     });
                 } else {
                     time = new Date().toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
+                        hour: '2-digit',
+                        minute: '2-digit',
                     });
                 }
 
                 const isMe = senderName === myUsername;
-                const displayName = isMe ? senderName + " (You)" : senderName;
+                const displayName = isMe ? senderName + ' (You)' : senderName;
 
                 if (isMe) {
-                    group.classList.add("me");
+                    group.classList.add('me');
                 }
 
                 group.innerHTML = `
                 <div class="msg-sender" style="color:${color}">
                     ${escapeHtml(displayName)}
-                    <span class="msg-badge ${type}">${badgeLabel}</span>
+                    <span class="msg-badge ${type}">${escapeHtml(badgeLabel)}</span>
                     <span class="msg-time">${time}</span>
                 </div>
                 <div class="msg-text">${escapeHtml(text)}</div>
             `;
                 box.appendChild(group);
-                box.scrollTop = box.scrollHeight;
-                return true;
             }
 
             function addSystemMessage(text) {
@@ -879,10 +1131,11 @@
                     }
 
                     const msgs = data.messages || [];
-                    resetMessageView(msgs.length ? "" : "No messages yet.");
+                    // Populate localMessageHistory from server history
                     for (const m of msgs) {
-                        addMessage(m);
+                        accumulateMessage(m);
                     }
+                    renderChatBox();
                 } catch (e) {
                     /* keep restored login usable even if history fails */
                 }
@@ -918,10 +1171,25 @@
                     const msgs = data.messages || [];
 
                     let newFromOthers = 0;
+                    let needsRerender = false;
+                    let needsChannelRerender = false;
                     for (const m of msgs) {
-                        if (addMessage(m) && m.from !== myUsername)
-                            newFromOthers++;
+                        const isNew = accumulateMessage(m);
+                        if (isNew) {
+                            needsRerender = true;
+                            // Track unread for channels not currently active
+                            if (m.type === 'channel' && m.channel) {
+                                if (!(currentChatType === 'channel' && currentChatTarget === m.channel)) {
+                                    channelUnread[m.channel] = (channelUnread[m.channel] || 0) + 1;
+                                    needsChannelRerender = true;
+                                }
+                            }
+                            if (m.from !== myUsername) newFromOthers++;
+                        }
                     }
+
+                    if (needsChannelRerender) renderChannelList();
+                    if (needsRerender) renderChatBox();
 
                     if (newFromOthers > 0) {
                         showNotification(newFromOthers);
@@ -944,6 +1212,10 @@
                 pollingInterval = setInterval(fetchMessages, 1000);
                 // Refresh peer list every 5 seconds
                 peerPollingInterval = setInterval(getPeerList, 5000);
+                // Refresh channel list every 5 seconds
+                channelPollingInterval = setInterval(getChannelList, 5000);
+                // Initial channel load
+                getChannelList();
             }
 
             function stopPolling() {
@@ -954,6 +1226,10 @@
                 if (peerPollingInterval) {
                     clearInterval(peerPollingInterval);
                     peerPollingInterval = null;
+                }
+                if (channelPollingInterval) {
+                    clearInterval(channelPollingInterval);
+                    channelPollingInterval = null;
                 }
             }
 
