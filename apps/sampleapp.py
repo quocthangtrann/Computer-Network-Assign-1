@@ -570,17 +570,12 @@ def broadcast_peer(headers="guest", body="anonymous"):
     msg_text = data.get("msg", "")
     sender = data.get("from", "anonymous")
 
-    # Record in local message log
-    entry = {"from": sender, "to": "broadcast", "msg": msg_text, "ts": time.time()}
     request_peers = data.get("peers")
     if isinstance(request_peers, list):
         source_peers = request_peers
     else:
         with _lock:
             source_peers = list(peer_list)
-
-    with _lock:
-        messages.append(entry)
 
     # Never connect back to the sender's own peer entry. In callback mode
     # that would deadlock until timeout because this request is still being handled.
@@ -623,7 +618,7 @@ def broadcast_peer(headers="guest", body="anonymous"):
 
     result = {
         "status": "ok",
-        "message": "Broadcast sent",
+        "message": "Broadcast sent to other peers",
         "delivered": delivered,
         "failed": failed,
         "total_peers": len(targets),
@@ -712,8 +707,15 @@ def broadcast_channel(headers="guest", body="anonymous"):
     msg_text = data.get("msg", "")
     sender = data.get("from", "anonymous")
 
-    # Record message locally with to=channel_name so /get-channel-messages returns it
-    entry = {"from": sender, "to": channel_name, "msg": msg_text, "ts": time.time()}
+    # Record message locally with to=channel_name so /get-channel-messages returns it.
+    # The id lets browser polling deduplicate overlapping immediate/interval fetches.
+    entry = {
+        "id": uuid.uuid4().hex,
+        "from": sender,
+        "to": channel_name,
+        "msg": msg_text,
+        "ts": time.time(),
+    }
     with _lock:
         messages.append(entry)
         targets = [p for p in peer_list if p.get("username") != sender]
@@ -724,7 +726,12 @@ def broadcast_channel(headers="guest", body="anonymous"):
     def _send_channel(peer):
         """Background worker: deliver channel message to one peer."""
         msg_payload = json.dumps(
-            {"from": sender, "channel": channel_name, "msg": msg_text}
+            {
+                "id": entry["id"],
+                "from": sender,
+                "channel": channel_name,
+                "msg": msg_text,
+            }
         )
         raw_request = (
             "POST /receive-message HTTP/1.1\r\n"
@@ -805,6 +812,7 @@ def receive_message(headers="guest", body="anonymous"):
     channel = data.get("channel", None)
 
     entry = {
+        "id": data.get("id", uuid.uuid4().hex),
         "from": sender,
         "to": channel if channel else "me",
         "msg": msg_text,

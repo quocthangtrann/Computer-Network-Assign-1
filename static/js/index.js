@@ -4,6 +4,7 @@
 let currentView = "direct";
 let lastMsgCount = 0;
 let lastChannelMsgCounts = {}; // { channelName: count }
+let seenChannelMessageKeys = {}; // { channelName: Set<string> }
 // knownPeers: { username: {ip, port} }  (converted from server's list format)
 let knownPeers = {};
 let joinedChannels = ["general"];
@@ -48,7 +49,15 @@ function getLoopbackBackendUrl() {
 }
 function getTrackerUrl() {
     if (trackerApiBase) return trackerApiBase;
-    return `${window.location.origin}/api`;
+
+    const trackerIp =
+        document.getElementById("trackerIp").value.trim() ||
+        window.location.hostname;
+    const trackerPort = document.getElementById("trackerPort").value.trim();
+    const origin = `http://${trackerIp}:${trackerPort}`;
+
+    // 3001 is the central backend itself. Proxy ports expose it under /api.
+    return trackerPort === "3001" ? origin : `${origin}/api`;
 }
 function authHeaders(extra) {
     const headers = Object.assign({}, extra || {});
@@ -56,6 +65,16 @@ function authHeaders(extra) {
         headers["Authorization"] = "Basic " + authToken;
     }
     return headers;
+}
+
+async function readJsonResponse(response) {
+    const text = await response.text();
+    if (!text) return {};
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        return { status: "error", message: text || response.statusText };
+    }
 }
 
 function isLoopbackIp(ip) {
@@ -138,6 +157,7 @@ function switchChannel(channelName) {
     document.getElementById("chatMessages").innerHTML =
         `<div class="msg-system">Welcome to #${channelName}</div>`;
     lastChannelMsgCounts[channelName] = 0;
+    seenChannelMessageKeys[channelName] = new Set();
 }
 
 // ============================================================
@@ -165,11 +185,13 @@ async function registerPeer() {
             body: payload,
             credentials: "include",
         });
-        const data = await res.json();
-        if (data.status === "ok") {
+        const data = await readJsonResponse(res);
+        if (res.ok && data.status === "ok") {
             showToast(`Registered as ${myName}`);
             setStatus("Registered as " + myName, "success");
             document.getElementById("userStatusSidebar").textContent = "Online";
+        } else {
+            throw new Error(data.message || `HTTP ${res.status}`);
         }
     } catch (e) {
         setStatus("Registration failed", "error");
@@ -188,7 +210,10 @@ async function getPeerList() {
             headers: authHeaders(),
             credentials: "include",
         });
-        const data = await res.json();
+        const data = await readJsonResponse(res);
+        if (!res.ok || data.status === "error") {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
 
         // Convert list [{username, ip, port}] → dict {username: {ip, port}}
         knownPeers = {};
@@ -414,8 +439,8 @@ async function sendMessage() {
 }
 
 /**
- * Broadcast to ALL peers via /broadcast-peer {from, msg}.
- * My server fans-out to every peer in its registry.
+ * Broadcast to other peers via /broadcast-peer {from, msg}.
+ * My server fans out to known peers and skips the sender.
  */
 async function sendBroadcastMsg() {
     const msgText = document.getElementById("messageInput").value.trim();
@@ -497,6 +522,17 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function channelMessageKey(channelName, msg) {
+    if (msg.id) return msg.id;
+    return [
+        channelName,
+        msg.from || "",
+        msg.to || "",
+        msg.ts || "",
+        msg.msg || "",
+    ].join("|");
+}
+
 // ============================================================
 // POLLING — fetch new messages every 2 s
 // ============================================================
@@ -559,9 +595,15 @@ async function fetchChannelMessages(channelName) {
         const data = await res.json();
         const msgs = data.messages || [];
         const prevCount = lastChannelMsgCounts[channelName] || 0;
+        if (!seenChannelMessageKeys[channelName]) {
+            seenChannelMessageKeys[channelName] = new Set();
+        }
 
         if (msgs.length > prevCount) {
             for (let i = prevCount; i < msgs.length; i++) {
+                const key = channelMessageKey(channelName, msgs[i]);
+                if (seenChannelMessageKeys[channelName].has(key)) continue;
+                seenChannelMessageKeys[channelName].add(key);
                 addMessage({
                     type: "channel",
                     from: msgs[i].from,
@@ -693,10 +735,7 @@ async function loginUser() {
             credentials: "include", // accept Set-Cookie from cross-origin server
         });
 
-        let data = {};
-        try {
-            data = await res.json();
-        } catch (_) {}
+        const data = await readJsonResponse(res);
 
         if (res.ok && data.status === "ok") {
             try {
@@ -711,8 +750,11 @@ async function loginUser() {
                     }),
                     credentials: "include",
                 });
-                if (!localRes.ok) {
-                    throw new Error("Local backend rejected login");
+                const localData = await readJsonResponse(localRes);
+                if (!localRes.ok || localData.status === "error") {
+                    throw new Error(
+                        localData.message || "Local backend rejected login",
+                    );
                 }
             } catch (e) {
                 errDiv.textContent = "Local backend unreachable: " + e.message;
@@ -756,7 +798,7 @@ async function restoreSavedSession() {
         });
         if (!res.ok) return null;
 
-        const data = await res.json();
+        const data = await readJsonResponse(res);
         return data.status === "ok" && data.user ? data.user : null;
     }
 
@@ -801,14 +843,18 @@ function autoConfigure() {
     const myIp = params.get("peerIp") || params.get("myIp") || "127.0.0.1";
     const apiBase = params.get("apiBase") || params.get("trackerBase");
     const configuredUsername = params.get("username") || params.get("user");
+    const pagePort = window.location.port || "";
+    const trackerPort =
+        params.get("trackerPort") ||
+        params.get("proxyPort") ||
+        (pagePort === "3000" ? "3001" : pagePort || "8080");
     trackerApiBase = apiBase
         ? new URL(apiBase, window.location.origin).href.replace(/\/$/, "")
-        : `${window.location.origin}/api`;
+        : "";
 
     document.getElementById("myIp").value = myIp;
     document.getElementById("myPort").value = port;
-    document.getElementById("trackerPort").value =
-        params.get("trackerPort") || window.location.port || "8080";
+    document.getElementById("trackerPort").value = trackerPort;
     document.getElementById("trackerIp").value = trackerIp;
 
     if (configuredUsername) {
