@@ -21,6 +21,8 @@ import hashlib
 import uuid
 import time
 import fcntl
+import urllib.request
+import urllib.error
 
 from daemon import AsynapRous
 
@@ -40,6 +42,18 @@ PEER_TIMEOUT_SECONDS = 120
 # Keep enough transcript to survive browser refreshes without letting the
 # shared JSON state grow forever.
 MAX_MESSAGE_HISTORY = 200
+
+# ---------------------------------------------------------------------------
+# Hybrid P2P Configuration
+# ---------------------------------------------------------------------------
+
+# Module-level cache for discovered peers
+# Format: {"username": {"ip": "...", "port": ...}}
+LOCAL_PEER_CACHE = {}
+
+# Tracker URL (The central hub that maintains the directory)
+TRACKER_URL = "http://192.168.1.100:3001"
+
 
 # ---------------------------------------------------------------------------
 # File-based shared state utilities (cross-process safe)
@@ -398,27 +412,51 @@ def submit_info(headers="guest", body="anonymous"):
 
 @app.route("/get-list", methods=["GET"])
 def get_list(headers="guest", body="anonymous"):
+    global LOCAL_PEER_CACHE
 
-    # Clean up stale peers before returning the list
-    def _get_and_clean(state):
-        _cleanup_stale_peers(state)
-        peers = []
-        for username, info in state.get("active_peers", {}).items():
-            peers.append(
-                {
-                    "username": username,
-                    "virtual_ip": info.get("virtual_ip", ""),
+    print("[SampleApp] Attempting to fetch peer list from Tracker: {}".format(TRACKER_URL))
+
+    try:
+        # Step 2: Fault-Tolerant Discovery
+        req = urllib.request.Request(TRACKER_URL + "/get-list")
+        with urllib.request.urlopen(req, timeout=3) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                remote_peers = data.get("peers", [])
+
+                # Update local cache with fresh data
+                # Assuming tracker returns peers with 'username' and 'virtual_ip' (format "ip:port")
+                for p in remote_peers:
+                    username = p.get("username")
+                    v_ip = p.get("virtual_ip", "")
+                    if username and ":" in v_ip:
+                        ip, port = v_ip.split(":")
+                        LOCAL_PEER_CACHE[username] = {"ip": ip, "port": int(port)}
+
+                print("[SampleApp] Successfully updated LOCAL_PEER_CACHE from Tracker")
+                result = {
+                    "status": "ok",
+                    "peers": remote_peers,
+                    "count": len(remote_peers),
                 }
-            )
-        return peers
+                return json.dumps(result).encode("utf-8")
 
-    peers = _read_modify_write(_get_and_clean)
+    except Exception as e:
+        print("[SampleApp] Tracker offline or error: {}. Using cached peers.".format(e))
 
-    print("[SampleApp] get_list called, {} peers".format(len(peers)))
+    # Fallback: Return existing LOCAL_PEER_CACHE
+    peers_list = []
+    for user, info in LOCAL_PEER_CACHE.items():
+        peers_list.append({
+            "username": user,
+            "virtual_ip": "{}:{}".format(info["ip"], info["port"])
+        })
+
     result = {
-        "status": "ok",
-        "peers": peers,
-        "count": len(peers),
+        "status": "cached_ok",
+        "message": "Tracker offline, using cached peers",
+        "peers": peers_list,
+        "count": len(peers_list),
     }
     return json.dumps(result).encode("utf-8")
 
@@ -433,7 +471,6 @@ def send_peer(headers="guest", body="anonymous"):
     if not user:
         return unauthorized_result()
 
-    print("[SampleApp] send_peer body={}".format(body))
     try:
         data = json.loads(body) if body else {}
     except Exception:
@@ -443,13 +480,21 @@ def send_peer(headers="guest", body="anonymous"):
     msg_text = data.get("msg", "")
     sender = data.get("from", user)
 
-    if not to_user:
-        result = {"status": "error", "message": "Missing 'to' field"}
+    if not to_user or not msg_text:
+        result = {"status": "error", "message": "Missing 'to' or 'msg'"}
         return json.dumps(result).encode("utf-8")
 
-    if not msg_text:
-        result = {"status": "error", "message": "Missing 'msg' field"}
+    # Step 3: Direct Node-to-Node
+    if to_user not in LOCAL_PEER_CACHE:
+        # Try to refresh list once if not found
+        get_list(headers, body)
+
+    if to_user not in LOCAL_PEER_CACHE:
+        result = {"status": "error", "message": "Peer '{}' not in cache".format(to_user)}
         return json.dumps(result).encode("utf-8")
+
+    peer_info = LOCAL_PEER_CACHE[to_user]
+    target_url = "http://{}:{}/receive-message".format(peer_info["ip"], peer_info["port"])
 
     message_entry = {
         "id": uuid.uuid4().hex,
@@ -460,39 +505,58 @@ def send_peer(headers="guest", body="anonymous"):
         "ts": time.time(),
     }
 
-    def _enqueue(state):
-        state.setdefault("message_queues", {})
-        peers = state.get("active_peers", {})
+    try:
+        # POST message directly to target backend
+        payload = json.dumps(message_entry).encode("utf-8")
+        req = urllib.request.Request(target_url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
 
-        # Check target exists
-        if to_user not in peers:
-            return "not_found"
+        with urllib.request.urlopen(req, timeout=2) as response:
+            if response.status == 200:
+                # Also append to sender's own queue for UI consistency
+                def _enqueue_self(state):
+                    state.setdefault("message_queues", {})
+                    state["message_queues"].setdefault(sender, [])
+                    state["message_queues"][sender].append(message_entry)
+                    _append_history(state, sender, message_entry)
 
-        # Append to target's queue
-        state["message_queues"].setdefault(to_user, [])
-        state["message_queues"][to_user].append(message_entry)
-        _append_history(state, to_user, message_entry)
+                _read_modify_write(_enqueue_self)
 
-        # Also append to sender's own queue so they see their sent message
-        state["message_queues"].setdefault(sender, [])
-        state["message_queues"][sender].append(message_entry)
-        if sender != to_user:
-            _append_history(state, sender, message_entry)
+                result = {
+                    "status": "ok",
+                    "message": "Direct P2P message delivered to {}".format(to_user),
+                    "delivered": True,
+                }
+                return json.dumps(result).encode("utf-8")
 
-        return "ok"
-
-    status = _read_modify_write(_enqueue)
-
-    if status == "not_found":
-        result = {"status": "error", "message": "Peer '{}' not found".format(to_user)}
+    except Exception as e:
+        print("[SampleApp] P2P Send failed to {}: {}".format(target_url, e))
+        result = {"status": "error", "message": "P2P connection failed: {}".format(e)}
         return json.dumps(result).encode("utf-8")
 
-    result = {
-        "status": "ok",
-        "message": "Message delivered to {}".format(to_user),
-        "delivered": True,
-    }
-    return json.dumps(result).encode("utf-8")
+
+@app.route("/receive-message", methods=["POST"])
+def receive_message(headers="guest", body="anonymous"):
+    # Step 4: Incoming P2P Handler
+    try:
+        msg_entry = json.loads(body) if body else {}
+    except Exception:
+        return json.dumps({"status": "error", "message": "Invalid JSON"}).encode("utf-8")
+
+    to_user = msg_entry.get("to")
+    if not to_user:
+        return json.dumps({"status": "error", "message": "Missing recipient"}).encode("utf-8")
+
+    def _store_incoming(state):
+        state.setdefault("message_queues", {})
+        state["message_queues"].setdefault(to_user, [])
+        state["message_queues"][to_user].append(msg_entry)
+        _append_history(state, to_user, msg_entry)
+
+    _read_modify_write(_store_incoming)
+
+    print("[SampleApp] Received P2P message for '{}' from '{}'".format(to_user, msg_entry.get("from")))
+    return json.dumps({"status": "ok"}).encode("utf-8")
 
 
 @app.route("/broadcast-peer", methods=["POST"])

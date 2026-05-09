@@ -19,7 +19,7 @@
                     <div class="app-logo">
                         <h1>Hybrid Chat</h1>
                     </div>
-                    <div class="app-logo-subtitle">Centralized Hub</div>
+                    <div class="app-logo-subtitle">Hybrid P2P</div>
                 </div>
 
                 <div class="sidebar-section">
@@ -357,10 +357,16 @@
             let myUsername = '';
             let myVirtualIp = '';
             let authToken = '';    // Base64-encoded "user:pass" for Authorization header
-            let knownPeers = {};   // { username: { virtual_ip } }
+            let knownPeers = {};   // { username: { ip, port } }
             let pollingInterval = null;
             let peerPollingInterval = null;
             let channelPollingInterval = null;
+
+            // ---- API Routing ----
+            // Control Plane: goes through the Proxy to Central Backend
+            const CENTRAL_API = '';  // relative path
+            // Data Plane: goes directly to the Local Backend
+            const LOCAL_API = 'http://localhost:3001';
 
             // Channel state
             let knownChannels = {};   // { "#general": ["alice", "bob"], ... }
@@ -499,8 +505,8 @@
                 authToken = btoa(username + ":" + password);
 
                 try {
-                    // Step 1: Login — get session
-                    const res = await fetch("/login", {
+                    // Step 1: Login — get session (via Proxy -> Central Backend)
+                    const res = await fetch(CENTRAL_API + "/login", {
                         method: "PUT",
                         headers: authHeaders({
                             "Content-Type": "application/json",
@@ -527,32 +533,32 @@
                             }),
                         );
 
-                        // Step 2: Register peer — get virtual IP
-                        let virtualIp = "—";
+                        // Step 2: Register node — tell Central Backend our local port
+                        let peerIp = '—';
                         try {
-                            const regRes = await fetch("/submit-info", {
+                            const regRes = await fetch(CENTRAL_API + "/register-node", {
                                 method: "POST",
                                 headers: authHeaders({
                                     "Content-Type": "application/json",
                                 }),
                                 body: JSON.stringify({
-                                    username: loggedInUser,
+                                    local_port: 3001,
                                 }),
                                 credentials: "include",
                             });
                             const regData = await regRes.json();
-                            if (regData.peer && regData.peer.virtual_ip) {
-                                virtualIp = regData.peer.virtual_ip;
+                            if (regData.peer) {
+                                peerIp = regData.peer.ip + ':' + regData.peer.port;
                             }
                         } catch (_) {}
 
-                        applyAuthenticatedUser(loggedInUser, virtualIp);
+                        applyAuthenticatedUser(loggedInUser, peerIp);
                         await loadMessageHistory();
                         addSystemMessage(
                             "Logged in as " +
                                 loggedInUser +
-                                " (Virtual IP: " +
-                                virtualIp +
+                                " (Node: " +
+                                peerIp +
                                 ")",
                         );
                         startPolling();
@@ -578,7 +584,7 @@
                 // Notify the server to remove this peer
                 if (isAuthenticated) {
                     try {
-                        await fetch("/logout", {
+                        await fetch(CENTRAL_API + "/logout", {
                             method: "POST",
                             headers: authHeaders(),
                             credentials: "include",
@@ -632,7 +638,7 @@
                 if (!isAuthenticated) return;
 
                 try {
-                    const res = await fetch("/get-list", {
+                    const res = await fetch(CENTRAL_API + "/get-list", {
                         headers: authHeaders(),
                         credentials: "include",
                     });
@@ -656,7 +662,10 @@
 
                     knownPeers = {};
                     (data.peers || []).forEach((p) => {
-                        knownPeers[p.username] = { virtual_ip: p.virtual_ip };
+                        knownPeers[p.username] = {
+                            ip: p.ip || '127.0.0.1',
+                            port: p.port || 3001,
+                        };
                     });
 
                     renderPeerList();
@@ -693,7 +702,7 @@
                     item.innerHTML = `
                     <div class="peer-avatar" style="background:${color}">${name.charAt(0).toUpperCase()}</div>
                     <span class="peer-name">${escapeHtml(name)}${isSelf ? ' (You)' : ''}</span>
-                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.virtual_ip || '—')}</span>
+                    <span class="peer-port" style="font-family:monospace;">${escapeHtml(info.ip + ':' + info.port)}</span>
                     <div class="peer-status-dot"></div>
                 `;
                     container.appendChild(item);
@@ -719,7 +728,7 @@
             async function getChannelList() {
                 if (!isAuthenticated) return;
                 try {
-                    const res = await fetch('/get-channels', {
+                    const res = await fetch(CENTRAL_API + '/get-channels', {
                         headers: authHeaders(),
                         credentials: 'include'
                     });
@@ -778,7 +787,7 @@
                 const members = knownChannels[channelName] || [];
                 if (!members.includes(myUsername)) {
                     try {
-                        const res = await fetch('/join-channel', {
+                        const res = await fetch(CENTRAL_API + '/join-channel', {
                             method: 'POST',
                             headers: authHeaders({ 'Content-Type': 'application/json' }),
                             body: JSON.stringify({ channel: channelName }),
@@ -820,7 +829,7 @@
                 if (!name.startsWith('#')) name = '#' + name;
 
                 try {
-                    const res = await fetch('/join-channel', {
+                    const res = await fetch(CENTRAL_API + '/join-channel', {
                         method: 'POST',
                         headers: authHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify({ channel: name }),
@@ -891,7 +900,7 @@
                 }
 
                 try {
-                    const res = await fetch('/send-peer', {
+                    const res = await fetch(LOCAL_API + '/send-peer', {
                         method: 'POST',
                         headers: authHeaders({
                             'Content-Type': 'application/json',
@@ -901,7 +910,7 @@
                             to: toUser,
                             msg: msgText,
                         }),
-                        credentials: 'include',
+                        mode: 'cors',
                     });
 
                     if (res.ok) {
@@ -919,14 +928,14 @@
 
             async function sendChannelMsg(channel, msgText) {
                 try {
-                    const res = await fetch('/send-channel', {
+                    const res = await fetch(LOCAL_API + '/send-channel', {
                         method: 'POST',
                         headers: authHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify({
                             channel: channel,
                             msg: msgText
                         }),
-                        credentials: 'include'
+                        mode: 'cors',
                     });
                     if (res.ok) {
                         document.getElementById('messageInput').value = '';
@@ -946,7 +955,7 @@
                 if (!msgText) return;
 
                 try {
-                    const res = await fetch("/broadcast-peer", {
+                    const res = await fetch(LOCAL_API + "/broadcast-peer", {
                         method: "POST",
                         headers: authHeaders({
                             "Content-Type": "application/json",
@@ -955,7 +964,7 @@
                             from: myUsername,
                             msg: msgText,
                         }),
-                        credentials: "include",
+                        mode: 'cors',
                     });
 
                     if (res.ok) {
@@ -1110,9 +1119,9 @@
                 if (!isAuthenticated) return;
 
                 try {
-                    const res = await fetch("/message-history", {
+                    const res = await fetch(LOCAL_API + "/message-history", {
                         headers: authHeaders(),
-                        credentials: "include",
+                        mode: 'cors',
                     });
 
                     if (!res.ok) {
@@ -1145,9 +1154,9 @@
                 if (!isAuthenticated) return;
 
                 try {
-                    const res = await fetch("/fetch-messages", {
+                    const res = await fetch(LOCAL_API + "/fetch-messages", {
                         headers: authHeaders(),
-                        credentials: "include",
+                        mode: 'cors',
                     });
 
                     // Handle auth failure (cookie deleted, session expired)
@@ -1249,8 +1258,8 @@
                     }
                     authToken = token;
 
-                    // Validate credentials with the server
-                    const res = await fetch("/hello", {
+                    // Validate credentials with the Central Backend
+                    const res = await fetch(CENTRAL_API + "/hello", {
                         method: "GET",
                         headers: authHeaders(),
                         credentials: "include",
@@ -1259,26 +1268,26 @@
                     if (res.ok) {
                         const data = await res.json();
                         if (data.status === "ok" && data.user) {
-                            // Valid session — restore it and re-register
-                            let virtualIp = "—";
+                            // Valid session — restore it and re-register node
+                            let peerIp = '—';
                             try {
-                                const regRes = await fetch("/submit-info", {
+                                const regRes = await fetch(CENTRAL_API + "/register-node", {
                                     method: "POST",
                                     headers: authHeaders({
                                         "Content-Type": "application/json",
                                     }),
                                     body: JSON.stringify({
-                                        username: data.user,
+                                        local_port: 3001,
                                     }),
                                     credentials: "include",
                                 });
                                 const regData = await regRes.json();
-                                if (regData.peer && regData.peer.virtual_ip) {
-                                    virtualIp = regData.peer.virtual_ip;
+                                if (regData.peer) {
+                                    peerIp = regData.peer.ip + ':' + regData.peer.port;
                                 }
                             } catch (_) {}
 
-                            applyAuthenticatedUser(data.user, virtualIp);
+                            applyAuthenticatedUser(data.user, peerIp);
                             await loadMessageHistory();
                             startPolling();
                             showToast("Session restored for " + data.user);

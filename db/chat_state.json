@@ -2,30 +2,30 @@
   "active_peers": {
     "alice": {
       "virtual_ip": "192.168.99.132",
-      "joined_at": 1778314133.937023,
-      "last_seen": 1778314195.2658439
+      "joined_at": 1778315226.682317,
+      "last_seen": 1778315262.478843
     },
     "admin": {
       "virtual_ip": "192.168.33.35",
-      "joined_at": 1778314132.616247,
-      "last_seen": 1778314194.568251
-    },
-    "bob": {
-      "virtual_ip": "192.168.159.157",
-      "joined_at": 1778314152.051001,
-      "last_seen": 1778314196.147237
+      "joined_at": 1778315225.238333,
+      "last_seen": 1778315262.5562
     },
     "eve": {
       "virtual_ip": "192.168.250.106",
-      "joined_at": 1778314144.758411,
-      "last_seen": 1778314196.042021
+      "joined_at": 1778315227.344212,
+      "last_seen": 1778315261.697369
+    },
+    "bob": {
+      "virtual_ip": "192.168.159.157",
+      "joined_at": 1778315245.4059432,
+      "last_seen": 1778315262.4741602
     }
   },
   "message_queues": {
-    "bob": [],
     "alice": [],
     "admin": [],
-    "eve": []
+    "eve": [],
+    "bob": []
   },
   "sessions": {
     "8d47e8af339d43868cd277d5a4c01995": "admin",
@@ -884,6 +884,18 @@
     ],
     "#hi": [
       "eve",
+      "bob",
+      "admin",
+      "alice"
+    ],
+    "#hello-12": [
+      "alice",
+      "admin",
+      "eve",
+      "bob"
+    ],
+    "#helloooo": [
+      "alice",
       "bob"
     ]
   }

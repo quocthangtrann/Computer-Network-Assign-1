@@ -17,7 +17,7 @@
 
 import argparse
 
-from apps.sampleapp import create_sampleapp
+from apps.central_app import create_central_app
 
 # Default port number used if none is specified via command-line arguments.
 PORT = 9000
@@ -27,8 +27,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog='Backend',
-        description='Start the backend process (Centralized Hub)',
-        epilog='Backend daemon for HybridChat application'
+        description='Start the Central Backend (Control Plane — Auth + Discovery)',
+        epilog='Central daemon for HybridChat application'
     )
     parser.add_argument('--server-ip',
         type=str,
@@ -46,4 +46,5 @@ if __name__ == "__main__":
     ip = args.server_ip
     port = args.server_port
 
-    create_sampleapp(ip, port)
+    create_central_app(ip, port)
+
