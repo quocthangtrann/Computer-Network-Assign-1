@@ -2,7 +2,10 @@
 // STATE
 // ============================================================
 let currentView = "direct";
+let currentDirectPeer = null;
 let lastMsgCount = 0;
+let directMessages = [];
+let seenDirectMessageKeys = new Set();
 let lastChannelMsgCounts = {}; // { channelName: count }
 let seenChannelMessageKeys = {}; // { channelName: Set<string> }
 // knownPeers: { username: {ip, port} }  (converted from server's list format)
@@ -113,9 +116,13 @@ function updateUserDisplay() {
 document.getElementById("myName").addEventListener("input", updateUserDisplay);
 
 function updateDirectSubtitle() {
-    document.getElementById("chatSubtitle").textContent = selectedPeer
-        ? `Direct message to ${selectedPeer.username}`
-        : "Select a peer from Active Peers";
+    if (currentDirectPeer) {
+        document.getElementById("chatSubtitle").textContent =
+            `Direct message to ${currentDirectPeer}`;
+        return;
+    }
+    document.getElementById("chatSubtitle").textContent =
+        "Direct & Broadcast messages";
 }
 
 // ============================================================
@@ -123,6 +130,9 @@ function updateDirectSubtitle() {
 // ============================================================
 function switchView(view) {
     currentView = view;
+    if (view === "direct") {
+        currentDirectPeer = null;
+    }
     document
         .querySelectorAll(".channel-item")
         .forEach((el) => el.classList.remove("active"));
@@ -135,9 +145,39 @@ function switchView(view) {
     document.getElementById("broadcastBtn").style.display = "";
     document.getElementById("connectBtn").style.display = "";
 
-    // NOTE: Do NOT reset lastMsgCount or clear chatMessages here.
-    // Resetting would cause fetchMessages() to re-render all old messages
-    // on top of existing ones → duplicate messages in the UI.
+    renderDirectMessages();
+}
+
+function switchDirectConversation(username) {
+    currentView = "direct";
+    currentDirectPeer = username;
+    document
+        .querySelectorAll(".channel-item")
+        .forEach((el) => el.classList.remove("active"));
+    const target = Array.from(
+        document.querySelectorAll("[data-direct-peer]"),
+    ).find((el) => el.dataset.directPeer === username);
+    if (target) target.classList.add("active");
+
+    if (knownPeers[username]) {
+        selectedPeer = {
+            username,
+            ip: knownPeers[username].ip,
+            port: knownPeers[username].port,
+        };
+    } else if (!selectedPeer || selectedPeer.username !== username) {
+        selectedPeer = { username, ip: "", port: "" };
+    }
+
+    document.getElementById("chatTitle").textContent = username;
+    updateDirectSubtitle();
+    document.getElementById("sendBtn").textContent = "➤ Send Direct";
+    document.getElementById("broadcastBtn").style.display = "none";
+    document.getElementById("connectBtn").style.display = knownPeers[username]
+        ? ""
+        : "none";
+    renderPeerList();
+    renderDirectMessages();
 }
 
 function switchChannel(channelName) {
@@ -233,7 +273,7 @@ async function getPeerList(showFeedback = true) {
                 };
             } else {
                 selectedPeer = null;
-                if (currentView === "direct") {
+                if (currentView === "direct" && !currentDirectPeer) {
                     updateDirectSubtitle();
                 }
             }
@@ -282,10 +322,9 @@ function selectPeer(username) {
         ip: info.ip,
         port: info.port,
     };
+    ensureDirectConversation(username);
     renderPeerList();
-    if (currentView === "direct") {
-        updateDirectSubtitle();
-    }
+    switchDirectConversation(username);
     showToast(`Selected ${username} (${info.ip}:${info.port})`);
 }
 
@@ -384,7 +423,21 @@ async function sendMessage() {
     const myName = document.getElementById("myName").value;
 
     if (currentView === "direct") {
-        if (!selectedPeer) {
+        if (
+            currentDirectPeer &&
+            (!selectedPeer || selectedPeer.username !== currentDirectPeer)
+        ) {
+            const info = knownPeers[currentDirectPeer];
+            if (info) {
+                selectedPeer = {
+                    username: currentDirectPeer,
+                    ip: info.ip,
+                    port: info.port,
+                };
+            }
+        }
+
+        if (!selectedPeer || !selectedPeer.ip || !selectedPeer.port) {
             showToast("Select a peer from Active Peers first.");
             return;
         }
@@ -404,6 +457,7 @@ async function sendMessage() {
                 credentials: "include",
             });
             if (res.ok) {
+                ensureDirectConversation(selectedPeer.username);
                 // Fix #1 Double-message: do NOT call addMessage() here.
                 // Backend records the message in its list immediately.
                 // We trigger an instant poll so the sender sees it right away
@@ -493,9 +547,7 @@ function addMessage(msgObj) {
     const myName = document.getElementById("myName").value.trim();
     const baseSenderName = senderName.replace(" (You)", "");
     const isOwnMessage = msgObj.own || (myName && baseSenderName === myName);
-    const displaySender = isOwnMessage
-        ? `${baseSenderName} (You)`
-        : senderName;
+    const displaySender = isOwnMessage ? `${baseSenderName} (You)` : senderName;
     const color = getPeerColor(baseSenderName);
     const time = new Date().toLocaleTimeString([], {
         hour: "2-digit",
@@ -544,6 +596,75 @@ function channelMessageKey(channelName, msg) {
     ].join("|");
 }
 
+function directMessageKey(msg) {
+    if (msg.id) return msg.id;
+    return [
+        msg.type || "",
+        msg.from || "",
+        msg.to || "",
+        msg.ts || "",
+        msg.msg || "",
+    ].join("|");
+}
+
+function directConversationPartner(msg, myName) {
+    if (!msg || msg.type !== "direct") return null;
+    return msg.from === myName ? msg.to : msg.from;
+}
+
+function ensureDirectConversation(username) {
+    if (!username || username === "me") return;
+    const list = document.getElementById("directMsgList");
+    if (!list) return;
+    const existing = Array.from(
+        list.querySelectorAll("[data-direct-peer]"),
+    ).find((item) => item.dataset.directPeer === username);
+    if (existing) return;
+
+    const item = document.createElement("li");
+    item.className = "channel-item direct-peer-item";
+    item.setAttribute("data-direct-peer", username);
+    item.addEventListener("click", () => switchDirectConversation(username));
+
+    const avatar = document.createElement("span");
+    avatar.className = "direct-peer-avatar";
+    avatar.style.background = getPeerColor(username);
+    avatar.textContent = username.charAt(0).toUpperCase();
+
+    const label = document.createElement("span");
+    label.className = "channel-name";
+    label.textContent = username;
+
+    item.append(avatar, label);
+    list.appendChild(item);
+}
+
+function renderDirectMessages() {
+    if (currentView !== "direct") return;
+
+    const box = document.getElementById("chatMessages");
+    const myName = document.getElementById("myName").value;
+    const visibleMessages = directMessages.filter((msg) => {
+        if (!currentDirectPeer) return true;
+        return directConversationPartner(msg, myName) === currentDirectPeer;
+    });
+
+    box.innerHTML = "";
+    if (visibleMessages.length === 0) {
+        addSystemMessage(
+            currentDirectPeer
+                ? `No messages with ${currentDirectPeer} yet.`
+                : "No direct or broadcast messages yet.",
+        );
+        return;
+    }
+
+    visibleMessages.forEach((msg) => {
+        const from = msg.from === myName ? `${msg.from} (You)` : msg.from;
+        addMessage({ type: msg.type, from, msg: msg.msg });
+    });
+}
+
 // ============================================================
 // POLLING — fetch new messages every 2 s
 // ============================================================
@@ -554,7 +675,6 @@ function channelMessageKey(channelName, msg) {
  * Derive type from 'to': 'broadcast' → type='broadcast', else 'direct'
  */
 async function fetchMessages() {
-    if (currentView !== "direct") return;
     if (!isAuthenticated) return;
 
     try {
@@ -565,22 +685,35 @@ async function fetchMessages() {
         if (!res.ok) return;
         const data = await res.json();
         const msgs = data.messages || [];
+        const myName = document.getElementById("myName").value;
+        let newFromOthers = 0;
+        let changed = false;
 
-        if (msgs.length > lastMsgCount) {
-            const myName = document.getElementById("myName").value;
-            let newFromOthers = 0;
-            for (let i = lastMsgCount; i < msgs.length; i++) {
-                const m = msgs[i];
-                const type = m.to === "broadcast" ? "broadcast" : "direct";
-                // Mark own messages with "(You)" so they're visually distinct
-                const displayFrom =
-                    m.from === myName ? m.from + " (You)" : m.from;
-                addMessage({ type, from: displayFrom, msg: m.msg });
-                if (m.from !== myName) newFromOthers++;
+        msgs.forEach((msg) => {
+            const typedMsg = Object.assign({}, msg, {
+                type:
+                    msg.type ||
+                    (msg.to === "broadcast" ? "broadcast" : "direct"),
+            });
+            const key = directMessageKey(typedMsg);
+            if (seenDirectMessageKeys.has(key)) return;
+
+            seenDirectMessageKeys.add(key);
+            directMessages.push(typedMsg);
+            changed = true;
+
+            const partner = directConversationPartner(typedMsg, myName);
+            if (partner) {
+                ensureDirectConversation(partner);
             }
-            // Only show notification badge for messages from others
+
+            if (typedMsg.from !== myName) newFromOthers++;
+        });
+
+        lastMsgCount = msgs.length;
+        if (changed) {
+            renderDirectMessages();
             if (newFromOthers > 0) showNotification(newFromOthers);
-            lastMsgCount = msgs.length;
         }
     } catch (e) {
         /* silently ignore poll errors */
@@ -888,7 +1021,9 @@ async function renameChannel(oldName) {
 
 async function deleteChannel(name) {
     if (name === "general") return;
-    if (!confirm(`Delete #${name}? Messages in this channel will be removed.`)) {
+    if (
+        !confirm(`Delete #${name}? Messages in this channel will be removed.`)
+    ) {
         return;
     }
 
@@ -928,9 +1063,8 @@ async function deleteChannel(name) {
 // MAIN POLLING LOOP
 // ============================================================
 function pollLoop() {
-    if (currentView === "direct") {
-        fetchMessages();
-    } else {
+    fetchMessages();
+    if (currentView !== "direct") {
         fetchChannelMessages(currentView);
     }
 }
