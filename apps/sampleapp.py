@@ -510,6 +510,8 @@ def broadcast_peer(headers="guest", body="anonymous"):
 
     msg_text = data.get("msg", "")
     sender = data.get("from", user)
+    channel = data.get("channel", "").strip()
+    message_type = "channel" if channel else "broadcast"
 
     if not msg_text:
         result = {"status": "error", "message": "Missing 'msg' field"}
@@ -518,11 +520,13 @@ def broadcast_peer(headers="guest", body="anonymous"):
     message_entry = {
         "id": uuid.uuid4().hex,
         "from": sender,
-        "to": "broadcast",
+        "to": channel or "broadcast",
         "msg": msg_text,
-        "type": "broadcast",
+        "type": message_type,
         "ts": time.time(),
     }
+    if channel:
+        message_entry["channel"] = channel
 
     def _broadcast(state):
         state.setdefault("message_queues", {})

@@ -394,6 +394,8 @@ class Response():
             base_dir = self.prepare_content_type(mime_type='text/html')
         elif mime_type == 'text/css':
             base_dir = self.prepare_content_type(mime_type='text/css')
+        elif path.endswith('.js') or mime_type in ('text/javascript', 'application/javascript'):
+            base_dir = self.prepare_content_type(mime_type=mime_type or 'text/javascript')
         elif mime_type and mime_type.startswith('image/'):
             base_dir = self.prepare_content_type(mime_type=mime_type)
         elif mime_type == 'application/json' or mime_type == 'application/octet-stream':
