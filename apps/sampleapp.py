@@ -39,6 +39,7 @@ REST endpoints (Task 2.3):
   POST /broadcast-peer
   GET  /get-messages
   GET  /get-channels
+  POST /create-channel
   POST /get-channel-messages
   POST /broadcast-channel
   DELETE /leave-channel
@@ -54,6 +55,7 @@ import uuid
 import socket
 import threading
 import time
+import re
 
 from daemon import AsynapRous
 
@@ -71,8 +73,8 @@ sessions = {}
 # Message log: list of {"from": str, "msg": str, "ts": float}
 messages = []
 
-# Channels: {channel_name: [{"username": str, "ip": str, "port": str}, …]}
-channels = {}
+# Channels: {channel_name: [{"username": str, "ip": str, "port": str}, ...]}
+channels = {"general": []}
 
 # Thread lock for shared state mutations
 _lock = threading.Lock()
@@ -197,6 +199,14 @@ def detect_local_ip(target_host="8.8.8.8", target_port=80):
     except Exception as e:
         print("[SampleApp] detect_local_ip error: {}".format(e))
         return "127.0.0.1"
+
+
+def normalize_channel_name(name):
+    name = str(name or "").strip().lower()
+    name = re.sub(r"^#+", "", name)
+    name = re.sub(r"\s+", "-", name)
+    name = re.sub(r"[^a-z0-9_-]", "", name)
+    return name
 
 
 # AsynapRous application instance
@@ -656,8 +666,7 @@ def get_messages(headers="guest", body="anonymous"):
     print("[SampleApp] get_messages called")
     with _lock:
         msg_snapshot = [
-            m for m in messages
-            if m.get("type") != "channel" and not m.get("channel")
+            m for m in messages if m.get("type") != "channel" and not m.get("channel")
         ]
     result = {
         "status": "ok",
@@ -676,11 +685,52 @@ def get_channels(headers="guest", body="anonymous"):
 
     print("[SampleApp] get_channels called")
     with _lock:
+        channels.setdefault("general", [])
         ch_snapshot = {ch: list(members) for ch, members in channels.items()}
     result = {
         "status": "ok",
         "channels": ch_snapshot,
+        "names": sorted(ch_snapshot.keys()),
         "count": len(ch_snapshot),
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/create-channel", methods=["POST"])
+def create_channel(headers="guest", body="anonymous"):
+    # Register a channel in the shared channel directory.
+    auth_user = require_auth(headers)
+    if not auth_user:
+        return unauthorized_result()
+
+    print("[SampleApp] create_channel body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    channel_name = normalize_channel_name(data.get("channel") or data.get("name"))
+    if not channel_name or channel_name == "direct":
+        result = {"status": "error", "message": "Invalid channel name"}
+        return json.dumps(result).encode("utf-8")
+
+    username = data.get("username") or auth_user
+    member = {
+        "username": username,
+        "ip": data.get("ip", ""),
+        "port": data.get("port", ""),
+    }
+
+    with _lock:
+        members = channels.setdefault(channel_name, [])
+        if username:
+            members[:] = [m for m in members if m.get("username") != username]
+            members.append(member)
+
+    result = {
+        "status": "ok",
+        "channel": channel_name,
+        "message": "Channel #{} is available".format(channel_name),
     }
     return json.dumps(result).encode("utf-8")
 
@@ -697,14 +747,15 @@ def get_channel_messages(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    channel_name = data.get("channel", "general")
+    channel_name = normalize_channel_name(data.get("channel", "general")) or "general"
 
     # Filter message log for messages explicitly sent to this channel.
     # A direct message can have "to" equal to a channel name, so do not
     # use the destination field alone here.
     with _lock:
         ch_messages = [
-            m for m in messages
+            m
+            for m in messages
             if m.get("type") == "channel" and m.get("channel") == channel_name
         ]
 
@@ -729,7 +780,7 @@ def broadcast_channel(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    channel_name = data.get("channel", "general")
+    channel_name = normalize_channel_name(data.get("channel", "general")) or "general"
     msg_text = data.get("msg", "")
     sender = data.get("from", "anonymous")
 
@@ -745,6 +796,7 @@ def broadcast_channel(headers="guest", body="anonymous"):
         "ts": time.time(),
     }
     with _lock:
+        channels.setdefault(channel_name, [])
         messages.append(entry)
         targets = [p for p in peer_list if p.get("username") != sender]
 
@@ -806,7 +858,7 @@ def leave_channel(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    channel_name = data.get("channel", "general")
+    channel_name = normalize_channel_name(data.get("channel", "general")) or "general"
     username = data.get("username", "")
 
     with _lock:
@@ -838,7 +890,7 @@ def receive_message(headers="guest", body="anonymous"):
 
     sender = data.get("from", "unknown")
     msg_text = data.get("msg", "")
-    channel = data.get("channel", None)
+    channel = normalize_channel_name(data.get("channel", "")) or None
 
     entry = {
         "id": data.get("id", uuid.uuid4().hex),
@@ -850,6 +902,8 @@ def receive_message(headers="guest", body="anonymous"):
         "ts": time.time(),
     }
     with _lock:
+        if channel:
+            channels.setdefault(channel, [])
         messages.append(entry)
 
     print("[SampleApp] Received from {}: {}".format(sender, msg_text))
@@ -866,6 +920,8 @@ TRACKER_ROUTE_PATHS = {
     "/client-info",
     "/submit-info",
     "/get-list",
+    "/get-channels",
+    "/create-channel",
 }
 
 PEER_ROUTE_PATHS = {
@@ -880,6 +936,7 @@ PEER_ROUTE_PATHS = {
     "/broadcast-peer",
     "/get-messages",
     "/get-channels",
+    "/create-channel",
     "/get-channel-messages",
     "/broadcast-channel",
     "/leave-channel",

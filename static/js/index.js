@@ -206,7 +206,7 @@ async function registerPeer() {
  * and render the Active Peers panel.
  * API: GET /get-list  → {status, peers: [{username, ip, port}], count}
  */
-async function getPeerList() {
+async function getPeerList(showFeedback = true) {
     try {
         const res = await fetch(`${getTrackerUrl()}/get-list`, {
             headers: authHeaders(),
@@ -265,10 +265,11 @@ async function getPeerList() {
         renderPeerList();
         const count = Object.keys(knownPeers).length;
         setStatus(`${count} peer(s) online`, "success");
-        showToast(`Found ${count} peer(s)`);
+        if (showFeedback) showToast(`Found ${count} peer(s)`);
+        await syncChannels();
     } catch (e) {
         setStatus("Discovery failed", "error");
-        showToast("Error: " + e.message);
+        if (showFeedback) showToast("Error: " + e.message);
     }
 }
 
@@ -418,6 +419,7 @@ async function sendMessage() {
     } else {
         // Channel message
         try {
+            await getPeerList(false);
             const res = await fetch(`${getMyBaseUrl()}/broadcast-channel`, {
                 method: "POST",
                 headers: authHeaders({ "Content-Type": "application/json" }),
@@ -630,6 +632,15 @@ function showNotification(count) {
 // ============================================================
 // CHANNEL MANAGEMENT
 // ============================================================
+function normalizeChannelName(rawName) {
+    return String(rawName || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^#+/, "")
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9_-]/g, "");
+}
+
 function openCreateChannelModal() {
     document.getElementById("channelModal").classList.add("show");
     document.getElementById("newChannelName").focus();
@@ -640,27 +651,47 @@ function closeModal() {
 }
 
 async function createChannel() {
-    const name = document
-        .getElementById("newChannelName")
-        .value.trim()
-        .toLowerCase()
-        .replace(/^#+/, "")
-        .replace(/\s+/g, "-")
-        .replace(/[^a-z0-9_-]/g, "");
+    const name = normalizeChannelName(
+        document.getElementById("newChannelName").value,
+    );
     if (!name) return;
     if (name === "direct") {
         showToast("Channel name is reserved.");
         return;
     }
 
-    // Channels are local: just add to sidebar and start using broadcast-channel
-    if (!joinedChannels.includes(name)) {
-        joinedChannels.push(name);
-        addChannelToSidebar(name);
+    try {
+        const res = await fetch(`${getTrackerUrl()}/create-channel`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({
+                channel: name,
+                username: document.getElementById("myName").value,
+                ip: getMyIp(),
+                port: document.getElementById("myPort").value,
+            }),
+            credentials: "include",
+        });
+        const data = await readJsonResponse(res);
+        if (!res.ok || data.status === "error") {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+
+        const channelName = normalizeChannelName(data.channel || name);
+        ensureChannelInSidebar(channelName);
+        showToast("Channel #" + channelName + " created!");
+        closeModal();
+        switchChannel(channelName);
+        await syncChannels();
+    } catch (e) {
+        showToast("Create channel failed: " + e.message);
     }
-    showToast("Channel #" + name + " created!");
-    closeModal();
-    switchChannel(name);
+}
+
+function ensureChannelInSidebar(name) {
+    if (!name || joinedChannels.includes(name)) return;
+    joinedChannels.push(name);
+    addChannelToSidebar(name);
 }
 
 function addChannelToSidebar(name) {
@@ -676,6 +707,36 @@ function addChannelToSidebar(name) {
     label.textContent = name;
     li.append(hash, label);
     list.appendChild(li);
+}
+
+async function syncChannels() {
+    const endpoints = [getTrackerUrl(), getMyBaseUrl()];
+    const names = new Set(["general"]);
+
+    await Promise.all(
+        endpoints.map(async (baseUrl) => {
+            try {
+                const res = await fetch(`${baseUrl}/get-channels`, {
+                    headers: authHeaders(),
+                    credentials: "include",
+                });
+                if (!res.ok) return;
+                const data = await readJsonResponse(res);
+                const channelNames = Array.isArray(data.names)
+                    ? data.names
+                    : Object.keys(data.channels || {});
+                channelNames.forEach((name) => {
+                    const normalized = normalizeChannelName(name);
+                    if (normalized) names.add(normalized);
+                });
+            } catch (e) {
+                // Channel discovery is best-effort. Chat still works with
+                // already-known channels if one source is unavailable.
+            }
+        }),
+    );
+
+    names.forEach((name) => ensureChannelInSidebar(name));
 }
 
 // ============================================================
@@ -694,8 +755,11 @@ setInterval(pollLoop, 2000);
 
 // Refresh peer list every 10 seconds if peers are known
 setInterval(() => {
-    if (Object.keys(knownPeers).length > 0) getPeerList();
+    if (Object.keys(knownPeers).length > 0) getPeerList(false);
 }, 10000);
+
+// Refresh shared channel names from the tracker/local backend.
+setInterval(syncChannels, 10000);
 
 // ============================================================
 // AUTO-CONFIGURE ON LOAD
@@ -791,6 +855,8 @@ async function loginUser() {
             // Auto-register peer right after login so the user
             // can immediately start chatting without extra clicks
             await registerPeer();
+            await getPeerList(false);
+            await syncChannels();
         } else {
             authToken = "";
             errDiv.textContent = data.message || "Invalid credentials";
@@ -830,6 +896,8 @@ async function restoreSavedSession() {
         if (restoredUser) {
             applyAuthenticatedUser(restoredUser);
             await registerPeer();
+            await getPeerList(false);
+            await syncChannels();
             showToast("Session restored for " + restoredUser);
         }
     } catch (e) {
@@ -995,6 +1063,7 @@ async function bootstrap() {
     autoConfigure();
     await loadClientInfo();
     await restoreSavedSession();
+    await syncChannels();
 }
 
 bootstrap();
