@@ -661,25 +661,51 @@ async function createChannel() {
     }
 
     try {
-        const res = await fetch(`${getTrackerUrl()}/create-channel`, {
+        await getPeerList(false);
+
+        const myName = document.getElementById("myName").value;
+        const peers = Object.entries(knownPeers).map(([username, info]) => ({
+            username,
+            ip: info.ip,
+            port: info.port,
+        }));
+
+        const localRes = await fetch(`${getMyBaseUrl()}/create-channel`, {
             method: "POST",
             headers: authHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({
                 channel: name,
-                username: document.getElementById("myName").value,
+                username: myName,
                 ip: getMyIp(),
                 port: document.getElementById("myPort").value,
+                peers,
             }),
             credentials: "include",
         });
-        const data = await readJsonResponse(res);
-        if (!res.ok || data.status === "error") {
-            throw new Error(data.message || `HTTP ${res.status}`);
+        const data = await readJsonResponse(localRes);
+        if (!localRes.ok || data.status === "error") {
+            throw new Error(data.message || `HTTP ${localRes.status}`);
         }
 
         const channelName = normalizeChannelName(data.channel || name);
+
+        fetch(`${getTrackerUrl()}/create-channel`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({
+                channel: channelName,
+                username: myName,
+                ip: getMyIp(),
+                port: document.getElementById("myPort").value,
+                announce: false,
+            }),
+            credentials: "include",
+        }).catch(() => {});
+
         ensureChannelInSidebar(channelName);
-        showToast("Channel #" + channelName + " created!");
+        showToast(
+            `Channel #${channelName} created. Notified ${data.delivered?.length || 0} peer(s).`,
+        );
         closeModal();
         switchChannel(channelName);
         await syncChannels();
@@ -759,7 +785,8 @@ setInterval(() => {
 }, 10000);
 
 // Refresh shared channel names from the tracker/local backend.
-setInterval(syncChannels, 10000);
+// This is how peer-created channels show up in other browsers.
+setInterval(syncChannels, 2000);
 
 // ============================================================
 // AUTO-CONFIGURE ON LOAD
@@ -1016,7 +1043,7 @@ function bindDomEvents() {
     addClickHandler("broadcastBtn", sendBroadcastMsg);
     addClickHandler("connectBtn", connectPeer);
     addClickHandler("registerBtn", registerPeer);
-    addClickHandler("discoverBtn", getPeerList);
+    addClickHandler("discoverBtn", () => getPeerList(true));
     addClickHandler("loginBtn", openLoginModal);
     addClickHandler("logoutBtn", logoutUser);
     addClickHandler("cancelChannelBtn", closeModal);

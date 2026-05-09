@@ -698,7 +698,7 @@ def get_channels(headers="guest", body="anonymous"):
 
 @app.route("/create-channel", methods=["POST"])
 def create_channel(headers="guest", body="anonymous"):
-    # Register a channel in the shared channel directory.
+    # Register a channel and optionally announce it to known peers.
     auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
@@ -721,6 +721,91 @@ def create_channel(headers="guest", body="anonymous"):
         "port": data.get("port", ""),
     }
 
+    request_peers = data.get("peers")
+    with _lock:
+        members = channels.setdefault(channel_name, [])
+        if username:
+            members[:] = [m for m in members if m.get("username") != username]
+            members.append(member)
+        source_peers = request_peers if isinstance(request_peers, list) else list(peer_list)
+
+    should_announce = data.get("announce", True) is not False
+    targets = []
+    if should_announce:
+        targets = [
+            p
+            for p in source_peers
+            if p.get("username") != username and p.get("ip") and p.get("port")
+        ]
+    delivered = []
+    failed = []
+
+    def _announce_channel(peer):
+        msg_payload = json.dumps(
+            {
+                "channel": channel_name,
+                "from": username,
+                "creator": member,
+                "type": "channel-created",
+            }
+        )
+        raw_request = (
+            "POST /receive-channel HTTP/1.1\r\n"
+            "Host: {}:{}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
+        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
+        with _lock:
+            if resp:
+                delivered.append(peer.get("username"))
+            else:
+                failed.append(peer.get("username"))
+
+    threads = [
+        threading.Thread(target=_announce_channel, args=(p,), daemon=True)
+        for p in targets
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3)
+
+    result = {
+        "status": "ok",
+        "channel": channel_name,
+        "message": "Channel #{} is available".format(channel_name),
+        "delivered": delivered,
+        "failed": failed,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/receive-channel", methods=["POST"])
+def receive_channel(headers="guest", body="anonymous"):
+    # Receive a P2P channel-created event from another peer.
+    print("[SampleApp] receive_channel body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    channel_name = normalize_channel_name(data.get("channel", ""))
+    if not channel_name or channel_name == "direct":
+        result = {"status": "error", "message": "Invalid channel name"}
+        return json.dumps(result).encode("utf-8")
+
+    creator = data.get("creator") or {}
+    username = creator.get("username") or data.get("from", "")
+    member = {
+        "username": username,
+        "ip": creator.get("ip", ""),
+        "port": creator.get("port", ""),
+    }
+
     with _lock:
         members = channels.setdefault(channel_name, [])
         if username:
@@ -730,7 +815,7 @@ def create_channel(headers="guest", body="anonymous"):
     result = {
         "status": "ok",
         "channel": channel_name,
-        "message": "Channel #{} is available".format(channel_name),
+        "message": "Channel #{} received".format(channel_name),
     }
     return json.dumps(result).encode("utf-8")
 
@@ -937,6 +1022,7 @@ PEER_ROUTE_PATHS = {
     "/get-messages",
     "/get-channels",
     "/create-channel",
+    "/receive-channel",
     "/get-channel-messages",
     "/broadcast-channel",
     "/leave-channel",
