@@ -329,40 +329,22 @@
             }
         }
 
-        async function restoreSavedSession() {
-            try {
-                const res = await fetch('/hello', {
-                    method: 'GET',
-                    credentials: 'include'
-                });
-                if (!res.ok) return;
 
-                const data = await res.json();
-                if (data.status === 'ok' && data.user) {
-                    // Re-register to get virtual IP
-                    let virtualIp = '—';
-                    try {
-                        const regRes = await fetch('/submit-info', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ username: data.user }),
-                            credentials: 'include'
-                        });
-                        const regData = await regRes.json();
-                        if (regData.peer && regData.peer.virtual_ip) {
-                            virtualIp = regData.peer.virtual_ip;
-                        }
-                    } catch (_) { }
-
-                    applyAuthenticatedUser(data.user, virtualIp);
-                    showToast('Session restored for ' + data.user);
-                }
-            } catch (e) {
-                // No saved session — stay logged out
+        async function logoutUser() {
+            // Notify the server to remove this peer
+            if (isAuthenticated) {
+                try {
+                    await fetch('/logout', {
+                        method: 'POST',
+                        credentials: 'include'
+                    });
+                } catch (_) { }
             }
+            forceLogoutUI('Logged out.');
         }
 
-        function logoutUser() {
+        // Force-reset UI to logged-out state (no server call)
+        function forceLogoutUI(reason) {
             isAuthenticated = false;
             myUsername = '';
             myVirtualIp = '';
@@ -379,7 +361,7 @@
             document.getElementById('targetPeerSelect').innerHTML = '<option value="">Select peer...</option>';
             updateUserDisplay();
             setStatus('Not connected', 'offline');
-            showToast('Logged out.');
+            if (reason) showToast(reason);
         }
 
         // ============================================================
@@ -391,8 +373,21 @@
 
             try {
                 const res = await fetch('/get-list', { credentials: 'include' });
-                if (!res.ok) return;
+                if (!res.ok) {
+                    // 401 = session expired or cookie deleted
+                    if (res.status === 401) {
+                        forceLogoutUI('Session expired. Please login again.');
+                        return;
+                    }
+                    return;
+                }
                 const data = await res.json();
+
+                // Also check JSON-level auth error
+                if (data.__status__ === 401 || data.status === 'error') {
+                    forceLogoutUI('Session expired. Please login again.');
+                    return;
+                }
 
                 knownPeers = {};
                 (data.peers || []).forEach(p => {
@@ -584,8 +579,23 @@
 
             try {
                 const res = await fetch('/fetch-messages', { credentials: 'include' });
-                if (!res.ok) return;
+
+                // Handle auth failure (cookie deleted, session expired)
+                if (!res.ok) {
+                    if (res.status === 401) {
+                        forceLogoutUI('Session expired. Please login again.');
+                    }
+                    return;
+                }
+
                 const data = await res.json();
+
+                // Also check JSON-level auth error
+                if (data.__status__ === 401 || data.status === 'error') {
+                    forceLogoutUI('Session expired. Please login again.');
+                    return;
+                }
+
                 const msgs = data.messages || [];
 
                 let newFromOthers = 0;
@@ -621,9 +631,45 @@
         }
 
         // ============================================================
-        // INITIALIZATION
+        // INITIALIZATION — validate session on page load
         // ============================================================
-        restoreSavedSession();
+        (async function init() {
+            try {
+                const res = await fetch('/hello', {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.status === 'ok' && data.user) {
+                        // Valid session — restore it
+                        let virtualIp = '—';
+                        try {
+                            const regRes = await fetch('/submit-info', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ username: data.user }),
+                                credentials: 'include'
+                            });
+                            const regData = await regRes.json();
+                            if (regData.peer && regData.peer.virtual_ip) {
+                                virtualIp = regData.peer.virtual_ip;
+                            }
+                        } catch (_) { }
+
+                        applyAuthenticatedUser(data.user, virtualIp);
+                        showToast('Session restored for ' + data.user);
+                        await getPeerList();
+                        return;
+                    }
+                }
+            } catch (_) { }
+
+            // No valid session — show login
+            forceLogoutUI();
+        })();
+
+
     </script>
 </body>
 

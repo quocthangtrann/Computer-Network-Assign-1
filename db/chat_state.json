@@ -1,57 +1,17 @@
 {
   "active_peers": {
-    "alice": {
-      "virtual_ip": "192.168.99.132",
-      "joined_at": 1778308067.242825
-    },
     "bob": {
       "virtual_ip": "192.168.159.157",
-      "joined_at": 1778265046.679818
-    },
-    "david": {
-      "virtual_ip": "192.168.23.37",
-      "joined_at": 1778307853.6983612
-    },
-    "admin": {
-      "virtual_ip": "192.168.33.35",
-      "joined_at": 1778307890.93737
-    },
-    "eve": {
-      "virtual_ip": "192.168.250.106",
-      "joined_at": 1778308003.484877
+      "joined_at": 1778310029.909413,
+      "last_seen": 1778310624.555694
     }
   },
   "message_queues": {
-    "alice": [],
-    "bob": [
-      {
-        "from": "admin",
-        "to": "bob",
-        "msg": "hello bob",
-        "type": "direct",
-        "ts": 1778307902.3724139
-      },
-      {
-        "from": "alice",
-        "to": "broadcast",
-        "msg": "hello",
-        "type": "broadcast",
-        "ts": 1778307927.348277
-      },
-      {
-        "from": "admin",
-        "to": "broadcast",
-        "msg": "hello all",
-        "type": "broadcast",
-        "ts": 1778308030.0399349
-      }
-    ],
     "david": [],
-    "admin": [],
-    "eve": []
+    "bob": [],
+    "admin": []
   },
   "sessions": {
-    "3d5be1d1eccc41b6b0edd1952bcf8afb": "admin",
-    "1f56ea27714248a5aea14120c99296ea": "eve"
+    "8d47e8af339d43868cd277d5a4c01995": "admin"
   }
 }

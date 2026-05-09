@@ -34,6 +34,9 @@ STATE_FILE = os.path.join(os.path.dirname(__file__), '..', 'db', 'chat_state.jso
 # User credentials file
 USERS_FILE = os.path.join(os.path.dirname(__file__), '..', 'db', 'users.json')
 
+# Heartbeat timeout — peers not seen within this window are evicted
+PEER_TIMEOUT_SECONDS = 120
+
 # ---------------------------------------------------------------------------
 # File-based shared state utilities (cross-process safe)
 # ---------------------------------------------------------------------------
@@ -106,6 +109,25 @@ def _read_modify_write(modifier_fn):
         result = modifier_fn(state)
         _write_state(state)
         return result
+
+
+def _cleanup_stale_peers(state):
+    # Remove peers whose last_seen is older than PEER_TIMEOUT_SECONDS.
+    # Called inside a _read_modify_write so state is already locked.
+    now = time.time()
+    stale = []
+    for username, info in state.get("active_peers", {}).items():
+        last_seen = info.get("last_seen", info.get("joined_at", 0))
+        if now - last_seen > PEER_TIMEOUT_SECONDS:
+            stale.append(username)
+
+    for username in stale:
+        del state["active_peers"][username]
+        # Clean up their message queue
+        state.get("message_queues", {}).pop(username, None)
+        print("[SampleApp] Evicted stale peer: {} (timeout {}s)".format(username, PEER_TIMEOUT_SECONDS))
+
+    return stale
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +324,11 @@ def submit_info(headers="guest", body="anonymous"):
     def _register(state):
         state.setdefault("active_peers", {})
         state.setdefault("message_queues", {})
+        now = time.time()
         state["active_peers"][username] = {
             "virtual_ip": virtual_ip,
-            "joined_at": time.time(),
+            "joined_at": now,
+            "last_seen": now,
         }
         # Create message queue if not exists
         if username not in state["message_queues"]:
@@ -324,15 +348,18 @@ def submit_info(headers="guest", body="anonymous"):
 @app.route('/get-list', methods=['GET'])
 def get_list(headers="guest", body="anonymous"):
 
-    state = _read_state()
-    active_peers = state.get("active_peers", {})
+    # Clean up stale peers before returning the list
+    def _get_and_clean(state):
+        _cleanup_stale_peers(state)
+        peers = []
+        for username, info in state.get("active_peers", {}).items():
+            peers.append({
+                "username": username,
+                "virtual_ip": info.get("virtual_ip", ""),
+            })
+        return peers
 
-    peers = []
-    for username, info in active_peers.items():
-        peers.append({
-            "username": username,
-            "virtual_ip": info.get("virtual_ip", ""),
-        })
+    peers = _read_modify_write(_get_and_clean)
 
     print("[SampleApp] get_list called, {} peers".format(len(peers)))
     result = {
@@ -468,20 +495,66 @@ def fetch_messages(headers="guest", body="anonymous"):
     if not user:
         return unauthorized_result()
 
-    def _drain(state):
+    def _drain_and_heartbeat(state):
+        # Update last_seen — this IS the heartbeat
+        if user in state.get("active_peers", {}):
+            state["active_peers"][user]["last_seen"] = time.time()
+
+        # Evict stale peers who stopped polling
+        _cleanup_stale_peers(state)
+
+        # Drain message queue
         state.setdefault("message_queues", {})
         queue = state["message_queues"].get(user, [])
-        # Take a copy then clear
         messages = list(queue)
         state["message_queues"][user] = []
         return messages
 
-    messages = _read_modify_write(_drain)
+    messages = _read_modify_write(_drain_and_heartbeat)
 
     result = {
         "status": "ok",
         "messages": messages,
         "count": len(messages),
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+# Explicit Logout — remove peer, clear queue, delete session
+
+@app.route('/logout', methods=['POST'])
+def logout(headers="guest", body="anonymous"):
+
+    user = require_auth(headers)
+    if not user:
+        return unauthorized_result()
+
+    # Extract session token from cookie to delete it
+    cookie_str = headers.get('cookie', '') if hasattr(headers, 'get') else ''
+    session_token = ''
+    for pair in cookie_str.split(';'):
+        pair = pair.strip()
+        if '=' in pair:
+            k, v = pair.split('=', 1)
+            if k.strip() == 'sessionid':
+                session_token = v.strip()
+
+    def _remove_user(state):
+        # Remove from active peers
+        state.get("active_peers", {}).pop(user, None)
+        # Clear message queue
+        state.get("message_queues", {}).pop(user, None)
+        # Delete session
+        if session_token:
+            state.get("sessions", {}).pop(session_token, None)
+
+    _read_modify_write(_remove_user)
+
+    print("[SampleApp] User '{}' logged out and removed from active peers".format(user))
+    result = {
+        "status": "ok",
+        "message": "{} has been logged out".format(user),
+        "__set_cookie__": "sessionid=; Max-Age=0; Path=/",
     }
     return json.dumps(result).encode("utf-8")
 
