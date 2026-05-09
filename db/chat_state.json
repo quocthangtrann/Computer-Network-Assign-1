@@ -1,17 +1,25 @@
 {
   "active_peers": {
-    "bob": {
-      "virtual_ip": "192.168.159.157",
-      "joined_at": 1778310029.909413,
-      "last_seen": 1778310624.555694
+    "alice": {
+      "virtual_ip": "192.168.99.132",
+      "joined_at": 1778311063.6057322,
+      "last_seen": 1778311092.735092
+    },
+    "eve": {
+      "virtual_ip": "192.168.250.106",
+      "joined_at": 1778311083.427375,
+      "last_seen": 1778311091.508047
     }
   },
   "message_queues": {
-    "david": [],
     "bob": [],
-    "admin": []
+    "alice": [],
+    "eve": []
   },
   "sessions": {
-    "8d47e8af339d43868cd277d5a4c01995": "admin"
+    "8d47e8af339d43868cd277d5a4c01995": "admin",
+    "9c206fb91939434e8be6a91ba94cedbd": "admin",
+    "dd4f561e5b8743a19bc1228f9f48709a": "alice",
+    "2eedcb224d3140f8a515bdbce72eff07": "eve"
   }
 }

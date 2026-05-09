@@ -181,9 +181,17 @@
         let isAuthenticated = false;
         let myUsername = '';
         let myVirtualIp = '';
+        let authToken = '';    // Base64-encoded "user:pass" for Authorization header
         let knownPeers = {};   // { username: { virtual_ip } }
         let pollingInterval = null;
         let peerPollingInterval = null;
+
+        // Returns headers object with Authorization if logged in
+        function authHeaders(extra) {
+            const h = extra ? Object.assign({}, extra) : {};
+            if (authToken) h['Authorization'] = 'Basic ' + authToken;
+            return h;
+        }
 
         const PEER_COLORS = [
             '#6c5ce7', '#00cec9', '#fdcb6e', '#e17055',
@@ -282,11 +290,14 @@
                 return;
             }
 
+            // Store Basic Auth token
+            authToken = btoa(username + ':' + password);
+
             try {
-                // Step 1: Login — get session cookie
+                // Step 1: Login — get session
                 const res = await fetch('/login', {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ username, password }),
                     credentials: 'include'
                 });
@@ -298,12 +309,18 @@
                     closeLoginModal();
                     const loggedInUser = data.username || username;
 
+                    // Save credentials to localStorage for session restoration
+                    localStorage.setItem('chat_auth', JSON.stringify({
+                        username: loggedInUser,
+                        token: authToken
+                    }));
+
                     // Step 2: Register peer — get virtual IP
                     let virtualIp = '—';
                     try {
                         const regRes = await fetch('/submit-info', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: authHeaders({ 'Content-Type': 'application/json' }),
                             body: JSON.stringify({ username: loggedInUser }),
                             credentials: 'include'
                         });
@@ -320,10 +337,12 @@
                     // Immediately fetch peer list
                     await getPeerList();
                 } else {
+                    authToken = '';
                     errDiv.textContent = data.message || 'Invalid credentials';
                     errDiv.style.display = 'block';
                 }
             } catch (e) {
+                authToken = '';
                 errDiv.textContent = 'Server unreachable: ' + e.message;
                 errDiv.style.display = 'block';
             }
@@ -336,10 +355,13 @@
                 try {
                     await fetch('/logout', {
                         method: 'POST',
+                        headers: authHeaders(),
                         credentials: 'include'
                     });
                 } catch (_) { }
             }
+            localStorage.removeItem('chat_auth');
+            authToken = '';
             forceLogoutUI('Logged out.');
         }
 
@@ -348,6 +370,8 @@
             isAuthenticated = false;
             myUsername = '';
             myVirtualIp = '';
+            authToken = '';
+            localStorage.removeItem('chat_auth');
             stopPolling();
 
             document.getElementById('authStatus').textContent = 'Not logged in';
@@ -372,7 +396,10 @@
             if (!isAuthenticated) return;
 
             try {
-                const res = await fetch('/get-list', { credentials: 'include' });
+                const res = await fetch('/get-list', {
+                    headers: authHeaders(),
+                    credentials: 'include'
+                });
                 if (!res.ok) {
                     // 401 = session expired or cookie deleted
                     if (res.status === 401) {
@@ -473,7 +500,7 @@
             try {
                 const res = await fetch('/send-peer', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         from: myUsername,
                         to: toUser,
@@ -501,7 +528,7 @@
             try {
                 const res = await fetch('/broadcast-peer', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         from: myUsername,
                         msg: msgText
@@ -578,7 +605,10 @@
             if (!isAuthenticated) return;
 
             try {
-                const res = await fetch('/fetch-messages', { credentials: 'include' });
+                const res = await fetch('/fetch-messages', {
+                    headers: authHeaders(),
+                    credentials: 'include'
+                });
 
                 // Handle auth failure (cookie deleted, session expired)
                 if (!res.ok) {
@@ -631,23 +661,41 @@
         }
 
         // ============================================================
-        // INITIALIZATION — validate session on page load
+        // INITIALIZATION — restore session from localStorage
         // ============================================================
         (async function init() {
+            // Check if we have saved credentials in localStorage
+            const saved = localStorage.getItem('chat_auth');
+            if (!saved) {
+                forceLogoutUI();
+                return;
+            }
+
             try {
+                const { username, token } = JSON.parse(saved);
+                if (!username || !token) {
+                    forceLogoutUI();
+                    return;
+                }
+
+                authToken = token;
+
+                // Validate credentials with the server
                 const res = await fetch('/hello', {
                     method: 'GET',
+                    headers: authHeaders(),
                     credentials: 'include'
                 });
+
                 if (res.ok) {
                     const data = await res.json();
                     if (data.status === 'ok' && data.user) {
-                        // Valid session — restore it
+                        // Valid session — restore it and re-register
                         let virtualIp = '—';
                         try {
                             const regRes = await fetch('/submit-info', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
+                                headers: authHeaders({ 'Content-Type': 'application/json' }),
                                 body: JSON.stringify({ username: data.user }),
                                 credentials: 'include'
                             });
@@ -665,7 +713,7 @@
                 }
             } catch (_) { }
 
-            // No valid session — show login
+            // Invalid saved credentials
             forceLogoutUI();
         })();
 
