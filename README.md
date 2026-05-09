@@ -43,12 +43,11 @@ hosts to the correct backends.
 python3 start_sampleapp.py --server-ip 0.0.0.0 --server-port 2026
 ```
 
-
 #### Test 2.1 — Load test
 
 ```bash
-# Install Apache Bench if missing: brew install httpie
-ab -n 100 -c 20 http://localhost:2026/get-list
+# Install Apache Bench if missing: brew install httpd
+ab -n 100 -c 20 http://localhost:8080/api/get-list
 ```
 
 If all 100 requests complete without the server freezing, non-blocking I/O is working.
@@ -65,13 +64,11 @@ To properly test the authentication features, you will need 4 separate terminal 
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 9000
 ```
 
-
 #### Terminal 2 — Proxy Server (Port 8080)
 
 ```bash
 python start_proxy.py --server-ip 0.0.0.0 --server-port 8080
 ```
-
 
 #### Terminal 3 — Second App Instance (Port 8000)
 
@@ -79,52 +76,88 @@ python start_proxy.py --server-ip 0.0.0.0 --server-port 8080
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 8000
 ```
 
-
 #### Terminal 4 — Client (curl Testing)
 
 **1. Login to receive Session Cookie (RFC 6265)**
+
 ```bash
 curl -X PUT http://127.0.0.1:8000/login -H "Content-Type: application/json" -d '{"username":"admin"}'
 ```
-*Response Output:*
+
+_Response Output:_
 `{"status": "ok", "message": "Welcome, admin!", "username": "admin"}`
-*(Note: Check Terminal 3 logs to see the generated `sessionid`, e.g., `Session created for admin → a40a...`)*
+_(Note: Check Terminal 3 logs to see the generated `sessionid`, e.g., `Session created for admin → a40a...`)_
 
 **2. Access protected route using the Cookie**
+
 ```bash
 curl -X POST http://127.0.0.1:8000/hello -H "Cookie: sessionid=<INSERT_SESSIONID_HERE>"
 ```
-*Response Output:*
+
+_Response Output:_
 `{"status": "ok", "message": "Hello, admin! You are authenticated.", "user": "admin"}`
 
 **3. Access protected route using Basic Auth (RFC 7617)**
+
 ```bash
 curl -X POST http://127.0.0.1:8000/hello -u admin:admin123
 ```
-*Response Output:*
+
+_Response Output:_
 `{"status": "ok", "message": "Hello, admin! You are authenticated.", "user": "admin"}`
 
 Credentials stored in `db/users.json` (format: `{"username": "password"}`).
 
 ---
 
-### Task 2.3 — Hybrid P2P Chat
+### Task 2.3 — Proxy + Central Tracker + Local P2P Backends
 
-Start two instances on different ports to simulate two peers:
+The intended runtime has three machines:
+
+- Proxy machine: runs the static web server, reverse proxy, and central tracker backend.
+- Client machine A: runs one local peer backend.
+- Client machine B: runs one local peer backend.
+
+Global APIs are reached through the proxy under `/api/*`. Local P2P APIs are called on each
+client backend directly by LAN IP and port.
+
+#### Proxy Machine
+
+Start these in separate terminals on the proxy/server machine:
 
 ```bash
-# Peer A (tracker + peer)
-python3 start_sampleapp.py --server-ip 0.0.0.0 --server-port 2026
+# Static UI, served through the proxy default route
+python3 start_web.py --server-ip 0.0.0.0 --server-port 3000
 
-# Peer B (in separate terminal)
-python3 start_sampleapp.py --server-ip 0.0.0.0 --server-port 2027
+# Central tracker backend, reached through proxy /api/*
+python3 start_tracker.py --server-ip 0.0.0.0 --server-port 3001
+
+# Reverse proxy exposed to clients
+python3 start_proxy.py --server-ip 0.0.0.0 --server-port 8080
 ```
+
+The default `config/proxy.conf` maps:
+
+```text
+http://SERVER_IP:8080/      -> 127.0.0.1:3000
+http://SERVER_IP:8080/api/* -> 127.0.0.1:3001
+```
+
+#### Each Client Machine
+
+Run the local peer backend on every client machine:
+
+```bash
+python3 start_sampleapp.py --server-ip 0.0.0.0 --server-port 8000
+```
+
+Use a different port only if that machine already uses `8000`.
 
 #### Browser UI Testing (Recommended)
 
-1. Open two browser tabs (you can use Incognito to isolate sessions):
-   - Tab A: [http://127.0.0.1:2026](http://127.0.0.1:2026) (auto-configured as `alice`)
-   - Tab B: [http://127.0.0.1:2027](http://127.0.0.1:2027) (auto-configured as `bob`)
+1. On each client machine, open the proxy URL:
+    - `http://SERVER_IP:8080/?peerPort=8000`
+    - Optional: add `&myIp=CLIENT_LAN_IP` if the auto-detected LAN IP is not correct.
 2. **Login & Register**: Click **Login** on the right sidebar and enter credentials (e.g., `admin:admin123` or `alice:password1`). Upon successful login, you will automatically be registered as a peer.
 3. **Discover**: Click **Discover** on the right sidebar to find other online peers.
 4. **Direct P2P Message**: In the Active Peers list, click a peer's name to target them. Type a message and click **Send Direct**.
@@ -138,35 +171,38 @@ If you prefer testing via `curl`, you can use the commands below.
 **Initialization Phase:**
 
 ```bash
-# Peer A registers itself with Peer B's tracker
-curl -X POST http://localhost:2027/submit-info \
+# Login through the proxy to the central tracker
+curl -i -X PUT http://SERVER_IP:8080/api/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"alice","ip":"127.0.0.1","port":"2026"}'
+  -d '{"username":"alice","password":"password1"}'
 
-# Peer B registers itself with Peer A's tracker
-curl -X POST http://localhost:2026/submit-info \
+# Register Alice's local backend with the central tracker
+curl -X POST http://SERVER_IP:8080/api/submit-info \
   -H "Content-Type: application/json" \
-  -d '{"username":"bob","ip":"127.0.0.1","port":"2027"}'
+  -H "Cookie: sessionid=<SESSION_FROM_LOGIN>" \
+  -d '{"username":"alice","ip":"192.168.1.10","port":"8000"}'
 
-# Get peer list from tracker
-curl http://localhost:2026/get-list
+# Get peer list from the central tracker through the proxy
+curl http://SERVER_IP:8080/api/get-list
 ```
 
 **Chat Phase (direct P2P):**
 
 ```bash
-# Send direct message from alice to bob
-curl -X POST http://localhost:2026/send-peer \
+# Alice UI calls Alice's local backend. Alice's backend then POSTs directly to
+# Bob at http://192.168.1.11:8000/receive-message.
+curl -X POST http://192.168.1.10:8000/send-peer \
+  -u alice:password1 \
   -H "Content-Type: application/json" \
-  -d '{"from":"alice","to":"bob","msg":"Hello Bob!"}'
+  -d '{"from":"alice","to":"bob","ip":"192.168.1.11","port":"8000","msg":"Hello Bob!"}'
 
-# Broadcast to all peers
-curl -X POST http://localhost:2026/broadcast-peer \
+# Bob's local backend receives direct P2P messages here
+curl -X POST http://192.168.1.11:8000/receive-message \
   -H "Content-Type: application/json" \
-  -d '{"from":"alice","msg":"Hello everyone!"}'
+  -d '{"from":"alice","msg":"Hello Bob!"}'
 
-# Get message log
-curl http://localhost:2026/get-messages
+# Get Alice's local message log
+curl -u alice:password1 http://192.168.1.10:8000/get-messages
 ```
 
 **Channel Management:**
@@ -195,23 +231,19 @@ curl -X DELETE http://localhost:2026/leave-channel \
 
 ## REST API Reference
 
-| Method   | Endpoint               | Description                               |
-|----------|------------------------|-------------------------------------------|
-| PUT/POST | `/login`               | Login; returns session cookie             |
-| POST/GET | `/hello`               | Protected route (cookie or Basic Auth)    |
-| POST     | `/echo`                | Echo request body                         |
-| POST     | `/submit-info`         | Register peer (ip, port, username)        |
-| GET      | `/get-list`            | List all registered peers                 |
-| POST     | `/add-list`            | Add a peer entry                          |
-| POST     | `/connect-peer`        | Fetch peer list from remote tracker       |
-| POST     | `/send-peer`           | Direct message to one peer                |
-| POST     | `/broadcast-peer`      | Broadcast to all peers                    |
-| GET      | `/get-messages`        | Get local message log                     |
-| GET      | `/get-channels`        | List channels and members                 |
-| POST     | `/get-channel-messages`| Messages in a specific channel            |
-| POST     | `/broadcast-channel`   | Broadcast to a channel                    |
-| DELETE   | `/leave-channel`       | Remove peer from channel                  |
-| POST     | `/receive-message`     | Receive an incoming P2P message           |
+| Role              | Method   | Endpoint           | Description                                                  |
+| ----------------- | -------- | ------------------ | ------------------------------------------------------------ |
+| Central via proxy | PUT/POST | `/api/login`       | Login; returns session cookie                                |
+| Central via proxy | GET      | `/api/client-info` | Return client LAN IP as seen by proxy                        |
+| Central via proxy | POST     | `/api/submit-info` | Register local peer backend IP and port                      |
+| Central via proxy | GET      | `/api/get-list`    | List registered peers                                        |
+| Local peer        | PUT/POST | `/login`           | Login to local backend for local API auth                    |
+| Local peer        | POST     | `/add-list`        | Cache discovered peer locally                                |
+| Local peer        | POST     | `/connect-peer`    | Check direct LAN reachability to a peer                      |
+| Local peer        | POST     | `/send-peer`       | Package and send direct message to remote `/receive-message` |
+| Local peer        | POST     | `/broadcast-peer`  | Send direct messages to multiple peer backends               |
+| Local peer        | GET      | `/get-messages`    | Get local message log                                        |
+| Local peer        | POST     | `/receive-message` | Receive incoming direct P2P message                          |
 
 ---
 
@@ -242,7 +274,6 @@ CO3094-asynaprous/
 └── static/               # CSS, JS, images
 ```
 
-
 # AsynapRous — How We Built It
 
 ## Project Goals
@@ -261,20 +292,20 @@ This project implements three tasks from the CO3094 course:
 
 Before adding any new features we had to fix several bugs that prevented the code from running:
 
-| File | Bug | Fix |
-|------|-----|-----|
-| `daemon/dictionary.py` | `from collections import MutableMapping` removed in Python 3.10 | Changed to `from collections.abc import MutableMapping` |
-| `daemon/utils.py` | Python 2 `from urlparse import urlparse` | Changed to `from urllib.parse import urlparse, unquote` |
-| `daemon/backend.py` | `await` inside a non-async function (indentation error on line 110) | Fixed indentation; moved `await` inside the correct `async` function |
-| `daemon/request.py` | `self.headers.get(...)` called before `self.headers` was initialised (crash) | Initialised `self.headers = CaseInsensitiveDict()` in `__init__` and parsed headers in `prepare()` before using them |
-| `daemon/response.py` | `fmt_header` variable referenced but never defined | Implemented the header-building logic inside `build_response_header()` |
-| `daemon/response.py` | `self._header` and `self._content` set but never returned | Added `return self._header + self._content` at the end of `build_response()` |
-| `daemon/httpadapter.py` | `response = ""` after calling the hook — empty string sent back | Implemented proper hook dispatch and JSON response wrapping |
-| `daemon/proxy.py` | `len(value)` — `value` is undefined (should be `proxy_map`) | Fixed to `len(proxy_map)` |
-| `daemon/httpadapter.py` | Single `conn.recv(4096)` truncated large broadcast requests | Implemented a robust `while True:` loop checking `Content-Length` |
-| `daemon/httpadapter.py` | DeprecationWarning on `asyncio.get_event_loop()` | Updated to use `asyncio.new_event_loop()` and `.close()` gracefully |
-| `daemon/backend.py` | `Resource temporarily unavailable` (EAGAIN) when using callback mode | Added `conn.setblocking(True)` on the accepted socket before handing off to `HttpAdapter` |
-| `www/index.html` | Initial static UI lacked proper cookie auth flow and duplicate rendering | Designed a dynamic reactive UI matching the strict routing constraints |
+| File                    | Bug                                                                          | Fix                                                                                                                  |
+| ----------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `daemon/dictionary.py`  | `from collections import MutableMapping` removed in Python 3.10              | Changed to `from collections.abc import MutableMapping`                                                              |
+| `daemon/utils.py`       | Python 2 `from urlparse import urlparse`                                     | Changed to `from urllib.parse import urlparse, unquote`                                                              |
+| `daemon/backend.py`     | `await` inside a non-async function (indentation error on line 110)          | Fixed indentation; moved `await` inside the correct `async` function                                                 |
+| `daemon/request.py`     | `self.headers.get(...)` called before `self.headers` was initialised (crash) | Initialised `self.headers = CaseInsensitiveDict()` in `__init__` and parsed headers in `prepare()` before using them |
+| `daemon/response.py`    | `fmt_header` variable referenced but never defined                           | Implemented the header-building logic inside `build_response_header()`                                               |
+| `daemon/response.py`    | `self._header` and `self._content` set but never returned                    | Added `return self._header + self._content` at the end of `build_response()`                                         |
+| `daemon/httpadapter.py` | `response = ""` after calling the hook — empty string sent back              | Implemented proper hook dispatch and JSON response wrapping                                                          |
+| `daemon/proxy.py`       | `len(value)` — `value` is undefined (should be `proxy_map`)                  | Fixed to `len(proxy_map)`                                                                                            |
+| `daemon/httpadapter.py` | Single `conn.recv(4096)` truncated large broadcast requests                  | Implemented a robust `while True:` loop checking `Content-Length`                                                    |
+| `daemon/httpadapter.py` | DeprecationWarning on `asyncio.get_event_loop()`                             | Updated to use `asyncio.new_event_loop()` and `.close()` gracefully                                                  |
+| `daemon/backend.py`     | `Resource temporarily unavailable` (EAGAIN) when using callback mode         | Added `conn.setblocking(True)` on the accepted socket before handing off to `HttpAdapter`                            |
+| `www/index.html`        | Initial static UI lacked proper cookie auth flow and duplicate rendering     | Designed a dynamic reactive UI matching the strict routing constraints                                               |
 
 ---
 
@@ -312,7 +343,7 @@ Three response builders were implemented:
   extension, picks the correct base directory (`www/` for HTML, `static/css/` for CSS,
   `static/images/` for images), reads the file, and assembles the HTTP envelope.
 
-**Key decision on MIME types:** We added handling for video/*, audio/*, application/xml,
+**Key decision on MIME types:** We added handling for video/_, audio/_, application/xml,
 application/zip, text/csv, and text/xml to satisfy the TODO items in the original code.
 
 ---
@@ -408,6 +439,7 @@ without "Address already in use" errors.
 #### Authentication (Task 2.2)
 
 **Session cookie flow:**
+
 1. Client POSTs `{"username": "x", "password": "y"}` to `/login`.
 2. Handler validates against `db/users.json`.
 3. On success: generates `token = uuid4().hex`, stores `sessions[token] = username`.
@@ -416,6 +448,7 @@ without "Address already in use" errors.
 6. Browser stores the cookie and sends it on every subsequent request.
 
 **Basic Auth flow:**
+
 1. Client sends `Authorization: Basic <base64(user:pass)>` header.
 2. `validate_basic_auth(headers)` decodes the base64 and checks `db/users.json`.
 3. Returns the username if valid.
@@ -424,12 +457,15 @@ Both methods are checked by `require_auth(headers)` — session cookie first, Ba
 
 #### P2P Chat (Task 2.3)
 
-**Initialization phase:** Peers call `/submit-info` to register with the tracker.
-The tracker stores `peer_list = [{"username": ..., "ip": ..., "port": ...}, ...]`.
-Peers call `/get-list` to discover each other.
+**Initialization phase:** Peers call `/api/submit-info` through the proxy to register
+their local backend LAN IP and port with the central tracker. The tracker stores
+`peer_list = [{"username": ..., "ip": ..., "port": ...}, ...]`. Peers call
+`/api/get-list` through the proxy to discover each other.
 
-**Chat phase:** Peers call `/send-peer` or `/broadcast-peer`. These directly open TCP
-connections to the target peer's port and POST to `/receive-message` — no tracker relay.
+**Chat phase:** The browser calls its own local backend at `/send-peer` or
+`/broadcast-peer`. That local backend opens a direct TCP connection to the target
+peer's LAN IP and port, then POSTs to `/receive-message` on the remote local backend.
+The proxy and central tracker are not in the message path.
 
 **Broadcast:** Uses `threading.Thread` per peer for parallel fan-out. Each thread calls
 `send_to_peer()` with a raw HTTP POST, waits up to 3 seconds, and records success/failure.
@@ -442,34 +478,32 @@ threads read/write simultaneously.
 
 ## Design Decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| Sentinel keys in JSON (`__status__`, `__set_cookie__`) | Keeps handler functions pure and testable without coupling them to HTTP |
-| `CaseInsensitiveDict` for headers | HTTP spec (RFC 7230) says header names are case-insensitive |
-| `SO_REUSEADDR` on all sockets | Prevents "Address already in use" on rapid restart during development |
-| `daemon=True` threads | Ensures no zombie threads linger after Ctrl+C |
-| uuid4 session tokens | Cryptographically random, no collision risk; sufficient for course project |
-| In-memory stores (not SQLite) | Stays within standard library; state is reset on restart which is acceptable for demo |
-| `timeout=3` in `send_to_peer` | Prevents broadcast from hanging forever if a peer is offline |
+| Decision                                               | Rationale                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Sentinel keys in JSON (`__status__`, `__set_cookie__`) | Keeps handler functions pure and testable without coupling them to HTTP               |
+| `CaseInsensitiveDict` for headers                      | HTTP spec (RFC 7230) says header names are case-insensitive                           |
+| `SO_REUSEADDR` on all sockets                          | Prevents "Address already in use" on rapid restart during development                 |
+| `daemon=True` threads                                  | Ensures no zombie threads linger after Ctrl+C                                         |
+| uuid4 session tokens                                   | Cryptographically random, no collision risk; sufficient for course project            |
+| In-memory stores (not SQLite)                          | Stays within standard library; state is reset on restart which is acceptable for demo |
+| `timeout=3` in `send_to_peer`                          | Prevents broadcast from hanging forever if a peer is offline                          |
 
 ---
 
 ## Files Created / Modified
 
-| File | Action | Description |
-|------|--------|-------------|
-| `daemon/dictionary.py` | Modified | Fixed Python 3.10+ `MutableMapping` import |
-| `daemon/utils.py` | Modified | Fixed Python 2 `urlparse` import |
-| `daemon/request.py` | Rewritten | Full HTTP request parser |
-| `daemon/response.py` | Rewritten | Full HTTP response builder with JSON + static file support |
-| `daemon/httpadapter.py` | Rewritten | Complete hook dispatch and auth header injection |
-| `daemon/backend.py` | Rewritten | All three non-blocking modes implemented |
-| `daemon/proxy.py` | Rewritten | Multi-thread proxy with routing |
-| `apps/sampleapp.py` | Rewritten | Full Task 2.2 + 2.3 implementation |
-| `db/users.json` | Created | User credential store |
-| `db/sessions.json` | Created | Session token store |
-
-
+| File                    | Action    | Description                                                |
+| ----------------------- | --------- | ---------------------------------------------------------- |
+| `daemon/dictionary.py`  | Modified  | Fixed Python 3.10+ `MutableMapping` import                 |
+| `daemon/utils.py`       | Modified  | Fixed Python 2 `urlparse` import                           |
+| `daemon/request.py`     | Rewritten | Full HTTP request parser                                   |
+| `daemon/response.py`    | Rewritten | Full HTTP response builder with JSON + static file support |
+| `daemon/httpadapter.py` | Rewritten | Complete hook dispatch and auth header injection           |
+| `daemon/backend.py`     | Rewritten | All three non-blocking modes implemented                   |
+| `daemon/proxy.py`       | Rewritten | Multi-thread proxy with routing                            |
+| `apps/sampleapp.py`     | Rewritten | Full Task 2.2 + 2.3 implementation                         |
+| `db/users.json`         | Created   | User credential store                                      |
+| `db/sessions.json`      | Created   | Session token store                                        |
 
 # AsynapRous — Architecture
 
@@ -599,7 +633,7 @@ backend.run_backend() -> Selectors Event Loop
                  ▼
          HttpAdapter.handle_client()
            ├── Request.prepare(raw)
-           ├── while True: chunk = recv(4096)  # Reads Headers then Body sequentially 
+           ├── while True: chunk = recv(4096)  # Reads Headers then Body sequentially
            ├── routes.get((M, path)) = hook
            ├── asyncio.new_event_loop() (if hook is coroutine)
            ├── hook(headers, body) → bytes
@@ -652,8 +686,8 @@ Peer A          Tracker          Peer B         Peer A              Peer B
   │──POST /submit-info──────────────┤              │                   │
   │  {"ip":"…","port":"2026"}       │              │                   │
   │                │                │              │                   │
-  │                │◄──POST /submit-info ──────────┤              
-  │                │  {"ip":"…","port":"2027"}      │              
+  │                │◄──POST /submit-info ──────────┤
+  │                │  {"ip":"…","port":"2027"}      │
   │                │                │              │                   │
   │──GET /get-list─►                │              │──POST /send-peer──►
   │◄──[{alice},{bob}]───────────────│              │  (TCP to :2027)   │

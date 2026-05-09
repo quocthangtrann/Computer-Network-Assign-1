@@ -16,17 +16,15 @@
 app.sampleapp
 ~~~~~~~~~~~~~~~~~
 
-This module is the main hybrid P2P chat application (Task 2.3).
-It also implements HTTP authentication (Task 2.2).
+This module implements the two backend roles used by the hybrid P2P chat app.
 
 Architecture:
-  - This process acts as BOTH a tracker (central peer registry) AND a peer.
-  - During the Initialization Phase: peers call /login, /submit-info,
-    /get-list, /add-list to register and discover each other.
-  - During the Chat Phase: peers call /send-peer and /broadcast-peer to
-    exchange messages directly (no tracker relay).
-  - Channel management: /get-channels, /get-channel-messages,
-    /broadcast-channel, /leave-channel.
+  - tracker role: central backend behind the proxy. It exposes global APIs
+    such as /login, /submit-info, /get-list, and /client-info.
+  - peer role: local backend on each client machine. It exposes local APIs
+    such as /connect-peer, /send-peer, /broadcast-peer, and /receive-message.
+  - Chat messages are sent peer-to-peer by the local backend opening a direct
+    TCP/HTTP connection to another peer's local backend.
 
 Authentication (Task 2.2):
   - /login (PUT)  → session cookie  (RFC 6265: Set-Cookie)
@@ -49,11 +47,9 @@ All handlers receive (headers: CaseInsensitiveDict, body: str) and return
 JSON-encoded bytes.
 """
 
-import sys
 import os
 import json
 import base64
-import hashlib
 import uuid
 import socket
 import threading
@@ -81,21 +77,24 @@ channels = {}
 # Thread lock for shared state mutations
 _lock = threading.Lock()
 
-USERS_FILE = os.path.join(os.path.dirname(__file__), '..', 'db', 'users.json')
+USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "db", "users.json")
+
 
 def load_users():
 
     try:
-        with open(USERS_FILE, 'r') as f:
+        with open(USERS_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return {"admin": "admin123", "alice": "password1", "bob": "password2"}
+
 
 USERS = load_users()
 
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
+
 
 def generate_session_token():
     """Generate a cryptographically random session token.
@@ -107,32 +106,35 @@ def generate_session_token():
     """
     return uuid.uuid4().hex
 
+
 def validate_session(headers):
 
-    cookie_str = headers.get('cookie', '')
+    cookie_str = headers.get("cookie", "")
     cookies = {}
-    for pair in cookie_str.split(';'):
+    for pair in cookie_str.split(";"):
         pair = pair.strip()
-        if '=' in pair:
-            k, v = pair.split('=', 1)
+        if "=" in pair:
+            k, v = pair.split("=", 1)
             cookies[k.strip()] = v.strip()
-    token = cookies.get('sessionid', '')
+    token = cookies.get("sessionid", "")
     return sessions.get(token, None)
+
 
 def validate_basic_auth(headers):
 
-    auth_header = headers.get('authorization', '')
-    if not auth_header.lower().startswith('basic '):
+    auth_header = headers.get("authorization", "")
+    if not auth_header.lower().startswith("basic "):
         return None
     try:
-        encoded = auth_header[6:]   
-        decoded = base64.b64decode(encoded).decode('utf-8')
-        username, password = decoded.split(':', 1)
+        encoded = auth_header[6:]
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        username, password = decoded.split(":", 1)
         if USERS.get(username) == password:
             return username
     except Exception:
         pass
     return None
+
 
 def require_auth(headers):
 
@@ -141,14 +143,19 @@ def require_auth(headers):
         return user
     return validate_basic_auth(headers)
 
+
 def unauthorized_result():
-    return json.dumps({
-        "status": "error",
-        "message": "Authentication required",
-        "__status__": 401,
-    }).encode("utf-8")
+    return json.dumps(
+        {
+            "status": "error",
+            "message": "Authentication required",
+            "__status__": 401,
+        }
+    ).encode("utf-8")
+
 
 # P2P message helper
+
 
 def send_to_peer(peer_ip, peer_port, payload_bytes):
     """Send a raw payload to a remote peer over TCP.
@@ -179,16 +186,17 @@ def send_to_peer(peer_ip, peer_port, payload_bytes):
         print("[SampleApp] send_to_peer error: {}".format(e))
         return None
 
+
 # AsynapRous application instance
 
 app = AsynapRous()
 
 # Task 2.2 — Login: session cookie auth (RFC 6265)
 
-@app.route('/login', methods=['PUT', 'POST'])
-def login(headers="guest", body="anonymous"):
-    #Handle user login and issue a session cookie (Task 2.2).
 
+@app.route("/login", methods=["PUT", "POST"])
+def login(headers="guest", body="anonymous"):
+    # Handle user login and issue a session cookie (Task 2.2).
 
     print("[SampleApp] Logging in {} to {}".format(headers, body))
 
@@ -226,11 +234,13 @@ def login(headers="guest", body="anonymous"):
         }
         return json.dumps(result).encode("utf-8")
 
+
 # Task 2.2 — Hello: protected route (cookie OR Basic Auth)
 
-@app.route('/hello', methods=['POST', 'PUT', 'GET'])
+
+@app.route("/hello", methods=["POST", "PUT", "GET"])
 def hello(headers="guest", body="anonymous"):
-    #Access a protected route using session cookie or Basic Auth (Task 2.2).
+    # Access a protected route using session cookie or Basic Auth (Task 2.2).
 
     user = require_auth(headers)
     if not user:
@@ -251,7 +261,9 @@ def hello(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
+
 # Echo — development helper
+
 
 @app.route("/echo", methods=["POST"])
 def echo(headers="guest", body="anonymous"):
@@ -269,11 +281,25 @@ def echo(headers="guest", body="anonymous"):
         data = {"status": "error", "error": "Invalid JSON"}
     return json.dumps(data).encode("utf-8")
 
+
+@app.route("/client-info", methods=["GET"])
+def client_info(headers="guest", body="anonymous"):
+    forwarded_for = headers.get("x-forwarded-for", "")
+    real_ip = headers.get("x-real-ip", "")
+    client_ip = forwarded_for.split(",", 1)[0].strip() or real_ip.strip()
+    result = {
+        "status": "ok",
+        "client_ip": client_ip,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
 # Task 2.3 — Peer registration (Initialization Phase)
 
-@app.route('/submit-info', methods=['POST'])
+
+@app.route("/submit-info", methods=["POST"])
 def submit_info(headers="guest", body="anonymous"):
-    #Register a peer's network information with the tracker (Task 2.3).
+    # Register a peer's network information with the tracker (Task 2.3).
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -284,7 +310,7 @@ def submit_info(headers="guest", body="anonymous"):
         data = {}
 
     username = data.get("username", "unknown")
-    peer_ip   = data.get("ip", "")
+    peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
 
     if not peer_ip or not peer_port:
@@ -307,9 +333,10 @@ def submit_info(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
-@app.route('/get-list', methods=['GET'])
+
+@app.route("/get-list", methods=["GET"])
 def get_list(headers="guest", body="anonymous"):
-    #Return the list of all registered peers (Task 2.3 — Initialization Phase).
+    # Return the list of all registered peers (Task 2.3 — Initialization Phase).
 
     print("[SampleApp] get_list called, {} peers".format(len(peer_list)))
     result = {
@@ -319,12 +346,12 @@ def get_list(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
-@app.route('/add-list', methods=['POST'])
+
+@app.route("/add-list", methods=["POST"])
 def add_list(headers="guest", body="anonymous"):
-    #Add a peer entry to the registry (Task 2.3).
+    # Add a peer entry to the registry (Task 2.3).
     if not require_auth(headers):
         return unauthorized_result()
-
 
     print("[SampleApp] add_list body={}".format(body))
     try:
@@ -332,8 +359,8 @@ def add_list(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    username  = data.get("username", "unknown")
-    peer_ip   = data.get("ip", "")
+    username = data.get("username", "unknown")
+    peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
 
     peer_entry = {"username": username, "ip": peer_ip, "port": peer_port}
@@ -345,11 +372,13 @@ def add_list(headers="guest", body="anonymous"):
     result = {"status": "ok", "added": peer_entry, "total": len(peer_list)}
     return json.dumps(result).encode("utf-8")
 
+
 # Task 2.3 — Chat Phase: direct peer-to-peer messaging
 
-@app.route('/connect-peer', methods=['POST'])
+
+@app.route("/connect-peer", methods=["POST"])
 def connect_peer(headers="guest", body="anonymous"):
-    #Connect to a remote peer and check if it is reachable (Task 2.3).
+    # Connect to a remote peer and check if it is reachable (Task 2.3).
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -359,12 +388,12 @@ def connect_peer(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    target_ip   = data.get("ip", "127.0.0.1")
+    target_ip = data.get("ip", "127.0.0.1")
     target_port = data.get("port", "2026")
 
-    # Build a GET /get-list request to the remote peer's tracker
+    # Build a lightweight health request to the remote peer's local backend.
     raw_request = (
-        "GET /get-list HTTP/1.1\r\n"
+        "GET /peer-info HTTP/1.1\r\n"
         "Host: {}:{}\r\n"
         "Accept: application/json\r\n"
         "Connection: close\r\n"
@@ -376,19 +405,19 @@ def connect_peer(headers="guest", body="anonymous"):
     if response:
         # Extract JSON body from HTTP response
         try:
-            parts = response.decode('utf-8', errors='replace').split("\r\n\r\n", 1)
+            parts = response.decode("utf-8", errors="replace").split("\r\n\r\n", 1)
             remote_data = json.loads(parts[1]) if len(parts) > 1 else {}
             result = {
                 "status": "ok",
                 "peer_alive": True,
-                "remote_peers": remote_data.get("peers", []),
+                "remote_peer": remote_data.get("peer", {}),
                 "message": "Peer at {}:{} is online".format(target_ip, target_port),
             }
         except Exception as e:
             result = {
                 "status": "ok",
                 "peer_alive": True,
-                "remote_peers": [],
+                "remote_peer": {},
                 "message": "Connected to {}:{}".format(target_ip, target_port),
             }
     else:
@@ -400,9 +429,21 @@ def connect_peer(headers="guest", body="anonymous"):
 
     return json.dumps(result).encode("utf-8")
 
-@app.route('/send-peer', methods=['POST'])
+
+@app.route("/peer-info", methods=["GET"])
+def peer_info(headers="guest", body="anonymous"):
+    result = {
+        "status": "ok",
+        "peer": {
+            "message": "local peer backend is reachable",
+        },
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/send-peer", methods=["POST"])
 def send_peer(headers="guest", body="anonymous"):
-    #Send a direct message to a specific peer (Task 2.3 — Chat Phase).
+    # Send a direct message to a specific peer (Task 2.3 — Chat Phase).
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -412,12 +453,12 @@ def send_peer(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    to_user  = data.get("to", "")
+    to_user = data.get("to", "")
     msg_text = data.get("msg", "")
-    sender   = data.get("from", "anonymous")
+    sender = data.get("from", "anonymous")
 
     # Find target peer in registry (or use explicit ip/port)
-    target_ip   = data.get("ip", "")
+    target_ip = data.get("ip", "")
     target_port = data.get("port", "")
 
     if not target_ip or not target_port:
@@ -456,14 +497,16 @@ def send_peer(headers="guest", body="anonymous"):
     t = threading.Thread(
         target=_deliver_async,
         args=(target_ip, target_port, sender, msg_text),
-        daemon=True
+        daemon=True,
     )
     t.start()
 
     # Return immediately — browser shows the message via polling within 2 s
     result = {
         "status": "ok",
-        "message": "Message queued for {} at {}:{}".format(to_user, target_ip, target_port),
+        "message": "Message queued for {} at {}:{}".format(
+            to_user, target_ip, target_port
+        ),
         "queued": True,
         "delivered": False,
     }
@@ -472,7 +515,8 @@ def send_peer(headers="guest", body="anonymous"):
 
 # ---------------------------------------------------------------------------
 
-@app.route('/broadcast-peer', methods=['POST'])
+
+@app.route("/broadcast-peer", methods=["POST"])
 def broadcast_peer(headers="guest", body="anonymous"):
     """Broadcast a message to ALL known peers (Task 2.3 — Chat Phase).
 
@@ -495,7 +539,7 @@ def broadcast_peer(headers="guest", body="anonymous"):
         data = {}
 
     msg_text = data.get("msg", "")
-    sender   = data.get("from", "anonymous")
+    sender = data.get("from", "anonymous")
 
     # Record in local message log
     entry = {"from": sender, "to": "broadcast", "msg": msg_text, "ts": time.time()}
@@ -512,7 +556,8 @@ def broadcast_peer(headers="guest", body="anonymous"):
     # Never connect back to the sender's own peer entry. In callback mode
     # that would deadlock until timeout because this request is still being handled.
     targets = [
-        p for p in source_peers
+        p
+        for p in source_peers
         if p.get("username") != sender and p.get("ip") and p.get("port")
     ]
 
@@ -556,9 +601,11 @@ def broadcast_peer(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
+
 # Task 2.3 — Message log
 
-@app.route('/get-messages', methods=['GET'])
+
+@app.route("/get-messages", methods=["GET"])
 def get_messages(headers="guest", body="anonymous"):
 
     if not require_auth(headers):
@@ -574,11 +621,13 @@ def get_messages(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
+
 # Task 2.3 — Channel management
 
-@app.route('/get-channels', methods=['GET'])
+
+@app.route("/get-channels", methods=["GET"])
 def get_channels(headers="guest", body="anonymous"):
-    #Return all available channels and their member lists (Task 2.3).
+    # Return all available channels and their member lists (Task 2.3).
 
     print("[SampleApp] get_channels called")
     with _lock:
@@ -591,9 +640,9 @@ def get_channels(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
-@app.route('/get-channel-messages', methods=['POST'])
+@app.route("/get-channel-messages", methods=["POST"])
 def get_channel_messages(headers="guest", body="anonymous"):
-    #Return messages belonging to a specific channel (Task 2.3).
+    # Return messages belonging to a specific channel (Task 2.3).
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -618,9 +667,9 @@ def get_channel_messages(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
-@app.route('/broadcast-channel', methods=['POST'])
+@app.route("/broadcast-channel", methods=["POST"])
 def broadcast_channel(headers="guest", body="anonymous"):
-    #Broadcast a message to all peers in a specific channel (Task 2.3).
+    # Broadcast a message to all peers in a specific channel (Task 2.3).
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -631,8 +680,8 @@ def broadcast_channel(headers="guest", body="anonymous"):
         data = {}
 
     channel_name = data.get("channel", "general")
-    msg_text     = data.get("msg", "")
-    sender       = data.get("from", "anonymous")
+    msg_text = data.get("msg", "")
+    sender = data.get("from", "anonymous")
 
     # Record message locally with to=channel_name so /get-channel-messages returns it
     entry = {"from": sender, "to": channel_name, "msg": msg_text, "ts": time.time()}
@@ -645,7 +694,9 @@ def broadcast_channel(headers="guest", body="anonymous"):
 
     def _send_channel(peer):
         """Background worker: deliver channel message to one peer."""
-        msg_payload = json.dumps({"from": sender, "channel": channel_name, "msg": msg_text})
+        msg_payload = json.dumps(
+            {"from": sender, "channel": channel_name, "msg": msg_text}
+        )
         raw_request = (
             "POST /receive-message HTTP/1.1\r\n"
             "Host: {}:{}\r\n"
@@ -662,7 +713,9 @@ def broadcast_channel(headers="guest", body="anonymous"):
             failed.append(peer.get("username"))
 
     # Fire all deliveries concurrently in daemon threads
-    threads = [threading.Thread(target=_send_channel, args=(p,), daemon=True) for p in targets]
+    threads = [
+        threading.Thread(target=_send_channel, args=(p,), daemon=True) for p in targets
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -677,8 +730,7 @@ def broadcast_channel(headers="guest", body="anonymous"):
     return json.dumps(result).encode("utf-8")
 
 
-
-@app.route('/leave-channel', methods=['DELETE'])
+@app.route("/leave-channel", methods=["DELETE"])
 def leave_channel(headers="guest", body="anonymous"):
     if not require_auth(headers):
         return unauthorized_result()
@@ -690,13 +742,12 @@ def leave_channel(headers="guest", body="anonymous"):
         data = {}
 
     channel_name = data.get("channel", "general")
-    username     = data.get("username", "")
+    username = data.get("username", "")
 
     with _lock:
         if channel_name in channels:
             channels[channel_name] = [
-                p for p in channels[channel_name]
-                if p.get("username") != username
+                p for p in channels[channel_name] if p.get("username") != username
             ]
             if not channels[channel_name]:
                 del channels[channel_name]
@@ -707,9 +758,11 @@ def leave_channel(headers="guest", body="anonymous"):
     }
     return json.dumps(result).encode("utf-8")
 
+
 # Receive incoming P2P message (called by other peers)
 
-@app.route('/receive-message', methods=['POST'])
+
+@app.route("/receive-message", methods=["POST"])
 def receive_message(headers="guest", body="anonymous"):
 
     print("[SampleApp] receive_message body={}".format(body))
@@ -718,9 +771,9 @@ def receive_message(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    sender   = data.get("from", "unknown")
+    sender = data.get("from", "unknown")
     msg_text = data.get("msg", "")
-    channel  = data.get("channel", None)
+    channel = data.get("channel", None)
 
     entry = {
         "from": sender,
@@ -735,12 +788,14 @@ def receive_message(headers="guest", body="anonymous"):
     result = {"status": "ok", "ack": "message received"}
     return json.dumps(result).encode("utf-8")
 
+
 # Entry point
 
 TRACKER_ROUTE_PATHS = {
     "/login",
     "/hello",
     "/echo",
+    "/client-info",
     "/submit-info",
     "/get-list",
 }
@@ -749,6 +804,7 @@ PEER_ROUTE_PATHS = {
     "/login",
     "/hello",
     "/echo",
+    "/peer-info",
     "/add-list",
     "/connect-peer",
     "/send-peer",
@@ -761,6 +817,7 @@ PEER_ROUTE_PATHS = {
     "/receive-message",
 }
 
+
 def configure_routes_for_role(role):
     role = (role or "").lower()
 
@@ -772,14 +829,15 @@ def configure_routes_for_role(role):
         raise ValueError("Unknown sample app role: {}".format(role))
 
     app.routes = {
-        key: handler
-        for key, handler in app.routes.items()
-        if key[1] in allowed_paths
+        key: handler for key, handler in app.routes.items() if key[1] in allowed_paths
     }
-    print("[SampleApp] Running in {} role with routes: {}".format(
-        role,
-        sorted("{} {}".format(method, path) for method, path in app.routes.keys())
-    ))
+    print(
+        "[SampleApp] Running in {} role with routes: {}".format(
+            role,
+            sorted("{} {}".format(method, path) for method, path in app.routes.keys()),
+        )
+    )
+
 
 def create_sampleapp(ip, port, role):
 

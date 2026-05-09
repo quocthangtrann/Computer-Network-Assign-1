@@ -44,12 +44,13 @@ from .dictionary import CaseInsensitiveDict
 
 #: Default fallback routing map (used if no proxy.conf is provided).
 PROXY_PASS = {
-    "192.168.56.103:8080": ('192.168.56.103', 9000),
-    "app1.local":          ('192.168.56.103', 9001),
-    "app2.local":          ('192.168.56.103', 9002),
+    "192.168.56.103:8080": ("192.168.56.103", 9000),
+    "app1.local": ("192.168.56.103", 9001),
+    "app2.local": ("192.168.56.103", 9002),
 }
 
 round_robin_counter = {}
+
 
 def receive_http_request(conn):
     raw = b""
@@ -78,12 +79,14 @@ def receive_http_request(conn):
         if body_received >= content_length:
             break
 
-    return raw.decode('utf-8', errors='replace')
+    return raw.decode("utf-8", errors="replace")
+
 
 def extract_request_path(request):
     first_line = request.splitlines()[0] if request.splitlines() else ""
     parts = first_line.split()
     return parts[1] if len(parts) >= 2 else "/"
+
 
 def rewrite_request_path(request, new_path):
     lines = request.split("\r\n")
@@ -96,16 +99,47 @@ def rewrite_request_path(request, new_path):
         lines[0] = " ".join(parts)
     return "\r\n".join(lines)
 
+
+def upsert_forwarded_headers(request, client_ip):
+    lines = request.split("\r\n")
+    if not lines:
+        return request
+
+    header_end = None
+    for i, line in enumerate(lines):
+        if line == "":
+            header_end = i
+            break
+
+    if header_end is None:
+        return request
+
+    filtered = []
+    for line in lines[1:header_end]:
+        header_name = line.split(":", 1)[0].strip().lower()
+        if header_name not in ("x-forwarded-for", "x-real-ip"):
+            filtered.append(line)
+
+    new_headers = [
+        lines[0],
+        "X-Forwarded-For: {}".format(client_ip),
+        "X-Real-IP: {}".format(client_ip),
+    ] + filtered
+
+    return "\r\n".join(new_headers + lines[header_end:])
+
+
 def strip_prefix(path, prefix):
     if not path.startswith(prefix):
         return path
 
-    stripped = path[len(prefix):]
+    stripped = path[len(prefix) :]
     if not stripped:
         return "/"
     if not stripped.startswith("/"):
         return "/" + stripped
     return stripped
+
 
 def resolve_path_route(path, routes):
     path_routes = routes.get("__path_routes__", [])
@@ -114,9 +148,11 @@ def resolve_path_route(path, routes):
         return None
     return max(matches, key=lambda route: len(route["prefix"]))
 
+
 def parse_target(target):
     host, port = target.split(":", 1)
     return host, int(port)
+
 
 def resolve_default_route(routes):
     target = routes.get("__default__")
@@ -133,7 +169,7 @@ def forward_request(host, port, request):
         backend.connect((host, port))
         # Encode to bytes if the caller passed a str
         if isinstance(request, str):
-            request = request.encode('utf-8')
+            request = request.encode("utf-8")
         backend.sendall(request)
 
         # Stream-read the full response in 4 KB chunks
@@ -155,7 +191,7 @@ def forward_request(host, port, request):
             "Connection: close\r\n"
             "\r\n"
             "502 Bad Gateway"
-        ).encode('utf-8')
+        ).encode("utf-8")
     finally:
         backend.close()
 
@@ -166,12 +202,12 @@ def resolve_routing_policy(hostname, routes):
     print("[Proxy] Resolving hostname: {}".format(hostname))
 
     # Look up the hostname; fall back to localhost:9000 if unknown
-    entry = routes.get(hostname, ('127.0.0.1:9000', 'round-robin'))
+    entry = routes.get(hostname, ("127.0.0.1:9000", "round-robin"))
     proxy_map, policy = entry
     print("[Proxy] proxy_map={} policy={}".format(proxy_map, policy))
 
-    proxy_host = '127.0.0.1'
-    proxy_port = '9000'
+    proxy_host = "127.0.0.1"
+    proxy_port = "9000"
 
     if isinstance(proxy_map, list):
         if len(proxy_map) == 0:
@@ -180,8 +216,8 @@ def resolve_routing_policy(hostname, routes):
             #       default host in your self-defined system.
             print("[Proxy] Empty resolved routing of hostname {}".format(hostname))
             # Use dummy host; forward_request will return 502
-            proxy_host = '127.0.0.1'
-            proxy_port = '9000'
+            proxy_host = "127.0.0.1"
+            proxy_port = "9000"
         elif len(proxy_map) == 1:
             # Single backend — use it directly
             proxy_host, proxy_port = proxy_map[0].split(":", 1)
@@ -190,14 +226,16 @@ def resolve_routing_policy(hostname, routes):
             # Implement actual Round-Robin Load Balancing
             if hostname not in round_robin_counter:
                 round_robin_counter[hostname] = 0
-            
+
             index = round_robin_counter[hostname] % len(proxy_map)
             proxy_host, proxy_port = proxy_map[index].split(":", 1)
-            
+
             round_robin_counter[hostname] += 1
     else:
         # Single string "host:port"
-        print("[Proxy] Singular route for hostname {} to {}".format(hostname, proxy_map))
+        print(
+            "[Proxy] Singular route for hostname {} to {}".format(hostname, proxy_map)
+        )
         proxy_host, proxy_port = proxy_map.split(":", 1)
 
     return proxy_host, proxy_port
@@ -215,8 +253,8 @@ def handle_client(ip, port, conn, addr, routes):
     # Extract Host header (required by HTTP/1.1, RFC 7230 §5.4)
     hostname = ""
     for line in request.splitlines():
-        if line.lower().startswith('host:'):
-            hostname = line.split(':', 1)[1].strip()
+        if line.lower().startswith("host:"):
+            hostname = line.split(":", 1)[1].strip()
             break
 
     if not hostname:
@@ -229,22 +267,30 @@ def handle_client(ip, port, conn, addr, routes):
 
     request_path = extract_request_path(request)
     path_route = resolve_path_route(request_path, routes)
+    request = upsert_forwarded_headers(request, addr[0])
 
     if path_route:
         resolved_host, resolved_port = parse_target(path_route["target"])
         if path_route.get("strip_prefix"):
             rewritten_path = strip_prefix(request_path, path_route["prefix"])
             request = rewrite_request_path(request, rewritten_path)
-        print("[Proxy] Path {} -> {}:{} as {}".format(
-            request_path, resolved_host, resolved_port, extract_request_path(request)
-        ))
+        print(
+            "[Proxy] Path {} -> {}:{} as {}".format(
+                request_path,
+                resolved_host,
+                resolved_port,
+                extract_request_path(request),
+            )
+        )
     else:
         default_result, _ = resolve_default_route(routes)
         if default_result:
             resolved_host, resolved_port = default_result
-            print("[Proxy] Default route {} -> {}:{}".format(
-                request_path, resolved_host, resolved_port
-            ))
+            print(
+                "[Proxy] Default route {} -> {}:{}".format(
+                    request_path, resolved_host, resolved_port
+                )
+            )
         else:
             # Resolve backend destination by Host header for legacy virtual host config.
             resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
@@ -255,7 +301,11 @@ def handle_client(ip, port, conn, addr, routes):
                 resolved_port = 9000
 
     if resolved_host:
-        print("[Proxy] Forwarding {} → {}:{}".format(hostname, resolved_host, resolved_port))
+        print(
+            "[Proxy] Forwarding {} → {}:{}".format(
+                hostname, resolved_host, resolved_port
+            )
+        )
         response = forward_request(resolved_host, resolved_port, request)
     else:
         response = (
@@ -265,7 +315,7 @@ def handle_client(ip, port, conn, addr, routes):
             "Connection: close\r\n"
             "\r\n"
             "404 Not Found"
-        ).encode('utf-8')
+        ).encode("utf-8")
 
     conn.sendall(response)
     conn.close()
@@ -289,10 +339,9 @@ def run_proxy(ip, port, routes):
             #       using multi-thread programming with the provided handle_client routine
             # Spawn a daemon thread so the accept() loop is never blocked
             t = threading.Thread(
-                target=handle_client,
-                args=(ip, port, conn, addr, routes)
+                target=handle_client, args=(ip, port, conn, addr, routes)
             )
-            t.daemon = True   # thread exits when the main process exits
+            t.daemon = True  # thread exits when the main process exits
             t.start()
 
     except socket.error as e:

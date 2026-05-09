@@ -25,6 +25,7 @@ responses. It supports:
 The Response class is used by HttpAdapter to turn the output of route
 handlers into raw bytes that are sent back over TCP.
 """
+
 import datetime
 import json
 import os
@@ -35,7 +36,7 @@ from .dictionary import CaseInsensitiveDict
 BASE_DIR = ""
 
 
-class Response():
+class Response:
     """The :class:`Response <Response>` object, which contains a
     server's response to an HTTP request.
 
@@ -126,10 +127,10 @@ class Response():
         try:
             mime_type, _ = mimetypes.guess_type(path)
         except Exception:
-            return 'application/octet-stream'
-        return mime_type or 'application/octet-stream'
+            return "application/octet-stream"
+        return mime_type or "application/octet-stream"
 
-    def prepare_content_type(self, mime_type='text/html'):
+    def prepare_content_type(self, mime_type="text/html"):
         """Set Content-Type header and return the base directory for the file.
 
         Routing logic:
@@ -153,73 +154,78 @@ class Response():
             self.headers = {}
 
         # Split into main/sub type (e.g. "text" / "html")
-        main_type, sub_type = mime_type.split('/', 1)
-        print("[Response] Processing main_type={} sub_type={}".format(main_type, sub_type))
+        main_type, sub_type = mime_type.split("/", 1)
+        print(
+            "[Response] Processing main_type={} sub_type={}".format(main_type, sub_type)
+        )
 
-        if main_type == 'text':
-            self.headers['Content-Type'] = 'text/{}; charset=utf-8'.format(sub_type)
-            if sub_type == 'css':
+        if main_type == "text":
+            self.headers["Content-Type"] = "text/{}; charset=utf-8".format(sub_type)
+            if sub_type == "css":
                 # CSS URL path is /css/styles.css → file at static/css/styles.css
                 # Use static/ as base so build_content joins correctly
                 base_dir = BASE_DIR + "static/"
-            elif sub_type == 'html':
+            elif sub_type == "html":
                 # HTML pages live under www/
                 base_dir = BASE_DIR + "www/"
-            elif sub_type == 'plain':
+            elif sub_type == "plain":
                 base_dir = BASE_DIR + "static/"
-            elif sub_type == 'csv':
+            elif sub_type == "csv":
                 # TODO: process text/csv
                 base_dir = BASE_DIR + "static/"
-            elif sub_type == 'xml':
+            elif sub_type == "xml":
                 # TODO: process text/xml
                 base_dir = BASE_DIR + "static/"
             else:
                 # Fallback for any other text subtype
                 base_dir = BASE_DIR + "static/"
 
-        elif main_type == 'image':
+        elif main_type == "image":
             # Image URL path is /images/foo.png → file at static/images/foo.png
             # Use static/ as base so build_content joins correctly
             base_dir = BASE_DIR + "static/"
-            self.headers['Content-Type'] = 'image/{}'.format(sub_type)
+            self.headers["Content-Type"] = "image/{}".format(sub_type)
 
-        elif main_type == 'application':
-            if sub_type == 'json':
+        elif main_type == "application":
+            if sub_type == "json":
                 # JSON responses are built in-memory (no file read needed)
                 base_dir = BASE_DIR + "apps/"
-                self.headers['Content-Type'] = 'application/json'
-            elif sub_type == 'xml':
+                self.headers["Content-Type"] = "application/json"
+            elif sub_type == "xml":
                 # TODO: process application/xml
                 base_dir = BASE_DIR + "static/"
-                self.headers['Content-Type'] = 'application/xml'
-            elif sub_type == 'zip':
+                self.headers["Content-Type"] = "application/xml"
+            elif sub_type == "zip":
                 # TODO: process application/zip
                 base_dir = BASE_DIR + "static/"
-                self.headers['Content-Type'] = 'application/zip'
+                self.headers["Content-Type"] = "application/zip"
             else:
                 base_dir = BASE_DIR + "static/"
-                self.headers['Content-Type'] = 'application/{}'.format(sub_type)
+                self.headers["Content-Type"] = "application/{}".format(sub_type)
 
-        elif main_type == 'video':
+        elif main_type == "video":
             # TODO: process video/mp4, video/mpeg, etc.
             base_dir = BASE_DIR + "static/video/"
-            self.headers['Content-Type'] = 'video/{}'.format(sub_type)
+            self.headers["Content-Type"] = "video/{}".format(sub_type)
 
-        elif main_type == 'audio':
+        elif main_type == "audio":
             # TODO: process audio types
             base_dir = BASE_DIR + "static/audio/"
-            self.headers['Content-Type'] = 'audio/{}'.format(sub_type)
+            self.headers["Content-Type"] = "audio/{}".format(sub_type)
 
         else:
-            raise ValueError("Invalid MIME type: main_type={} sub_type={}".format(
-                main_type, sub_type))
+            raise ValueError(
+                "Invalid MIME type: main_type={} sub_type={}".format(
+                    main_type, sub_type
+                )
+            )
 
         return base_dir
 
     # Content loading
     def build_content(self, path, base_dir):
         # Load a static file from disk and return its bytes.
-        filepath = os.path.join(base_dir, path.lstrip('/'))
+        filepath = os.path.join(base_dir, path.lstrip("/"))
         print("[Response] Serving the object at location {}".format(filepath))
 
         # TODO: implement the step of fetch the object file
@@ -254,12 +260,15 @@ class Response():
         # Build the header dict from known fields
         headers = {
             "Accept": "{}".format(reqhdr.get("Accept", "application/json")),
-            "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
+            "Accept-Language": "{}".format(
+                reqhdr.get("Accept-Language", "en-US,en;q=0.9")
+            ),
             "Cache-Control": "no-cache",
-            "Content-Type": "{}".format(self.headers.get('Content-Type', 'text/html')),
+            "Content-Type": "{}".format(self.headers.get("Content-Type", "text/html")),
             "Content-Length": "{}".format(len(self._content)),
-            "Date": "{}".format(datetime.datetime.utcnow().strftime(
-                "%a, %d %b %Y %H:%M:%S GMT")),
+            "Date": "{}".format(
+                datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+            ),
             "Max-Forward": "10",
             "Pragma": "no-cache",
             "User-Agent": "{}".format(reqhdr.get("User-Agent", "AsynapRous/1.0")),
@@ -292,11 +301,11 @@ class Response():
         header_lines.append("")
 
         fmt_header = "\r\n".join(header_lines)
-        return fmt_header.encode('utf-8')
+        return fmt_header.encode("utf-8")
 
     # 404 builder
     def build_notfound(self):
-        #Construct a standard 404 Not Found HTTP response.
+        # Construct a standard 404 Not Found HTTP response.
 
         return (
             "HTTP/1.1 404 Not Found\r\n"
@@ -307,11 +316,10 @@ class Response():
             "Connection: close\r\n"
             "\r\n"
             "404 Not Found"
-        ).encode('utf-8')
+        ).encode("utf-8")
 
     def build_unauthorized(self, realm="AsynapRous", extra_headers=None):
-        #Build a 401 Unauthorized response with a WWW-Authenticate header.
-
+        # Build a 401 Unauthorized response with a WWW-Authenticate header.
 
         body = b"401 Unauthorized"
         headers = {
@@ -329,21 +337,25 @@ class Response():
         header_lines.append("")
         header_lines.append("")
         header = "\r\n".join(header_lines)
-        return header.encode('utf-8') + body
+        return header.encode("utf-8") + body
 
     # JSON response builder (for REST API routes)
     def build_json_response(self, body_bytes, status=200, extra_headers=None):
-        #Build a full HTTP response for a JSON REST payload.
+        # Build a full HTTP response for a JSON REST payload.
 
         self.status_code = status
         self._content = body_bytes if body_bytes else b""
-        self.headers['Content-Type'] = 'application/json'
+        self.headers["Content-Type"] = "application/json"
 
         # Build status reasons
         status_reasons = {
-            200: "OK", 201: "Created", 400: "Bad Request",
-            401: "Unauthorized", 403: "Forbidden",
-            404: "Not Found", 500: "Internal Server Error",
+            200: "OK",
+            201: "Created",
+            400: "Bad Request",
+            401: "Unauthorized",
+            403: "Forbidden",
+            404: "Not Found",
+            500: "Internal Server Error",
         }
         reason = status_reasons.get(status, "OK")
 
@@ -365,11 +377,11 @@ class Response():
         header_lines.append("")
         header_str = "\r\n".join(header_lines)
 
-        return header_str.encode('utf-8') + self._content
+        return header_str.encode("utf-8") + self._content
 
     # Main response builder (for static files)
     def build_response(self, request, envelop_content=None):
-        #Build a full HTTP response for a static file request.
+        # Build a full HTTP response for a static file request.
 
         print("[Response] Start build response with req {}".format(request))
 
@@ -380,25 +392,26 @@ class Response():
             return self.build_notfound()
 
         # Root path / → serve index.html
-        if path == '/' or path == '':
-            path = '/index.html'
+        if path == "/" or path == "":
+            path = "/index.html"
 
         mime_type = self.get_mime_type(path)
-        print("[Response] {} path {} mime_type {}".format(
-            request.method, path, mime_type))
+        print(
+            "[Response] {} path {} mime_type {}".format(request.method, path, mime_type)
+        )
 
         base_dir = ""
 
         # Route to the correct base directory by MIME type
-        if path.endswith('.html') or mime_type == 'text/html':
-            base_dir = self.prepare_content_type(mime_type='text/html')
-        elif mime_type == 'text/css':
-            base_dir = self.prepare_content_type(mime_type='text/css')
-        elif mime_type and mime_type.startswith('image/'):
+        if path.endswith(".html") or mime_type == "text/html":
+            base_dir = self.prepare_content_type(mime_type="text/html")
+        elif mime_type in ("text/css", "text/javascript", "application/javascript"):
             base_dir = self.prepare_content_type(mime_type=mime_type)
-        elif mime_type == 'application/json' or mime_type == 'application/octet-stream':
+        elif mime_type and mime_type.startswith("image/"):
+            base_dir = self.prepare_content_type(mime_type=mime_type)
+        elif mime_type == "application/json" or mime_type == "application/octet-stream":
             # JSON API response — body is provided by the route handler
-            self.headers['Content-Type'] = 'application/json'
+            self.headers["Content-Type"] = "application/json"
             body = envelop_content if envelop_content else b""
             return self.build_json_response(body)
         # TODO: add support for other object types (video, audio, xml, zip, …)
