@@ -504,7 +504,13 @@ def send_peer(headers="guest", body="anonymous"):
         return json.dumps(result).encode("utf-8")
 
     # Record message locally so poller can show it immediately (no optimistic render needed)
-    entry = {"from": sender, "to": to_user, "msg": msg_text, "ts": time.time()}
+    entry = {
+        "from": sender,
+        "to": to_user,
+        "msg": msg_text,
+        "type": "direct",
+        "ts": time.time(),
+    }
     with _lock:
         messages.append(entry)
 
@@ -577,6 +583,18 @@ def broadcast_peer(headers="guest", body="anonymous"):
         with _lock:
             source_peers = list(peer_list)
 
+    # Keep a local copy so the sender sees what they sent, but do not
+    # network-deliver it back to the sender.
+    entry = {
+        "from": sender,
+        "to": "broadcast",
+        "msg": msg_text,
+        "type": "broadcast",
+        "ts": time.time(),
+    }
+    with _lock:
+        messages.append(entry)
+
     # Never connect back to the sender's own peer entry. In callback mode
     # that would deadlock until timeout because this request is still being handled.
     targets = [
@@ -637,7 +655,10 @@ def get_messages(headers="guest", body="anonymous"):
 
     print("[SampleApp] get_messages called")
     with _lock:
-        msg_snapshot = list(messages)
+        msg_snapshot = [
+            m for m in messages
+            if m.get("type") != "channel" and not m.get("channel")
+        ]
     result = {
         "status": "ok",
         "messages": msg_snapshot,
@@ -678,9 +699,14 @@ def get_channel_messages(headers="guest", body="anonymous"):
 
     channel_name = data.get("channel", "general")
 
-    # Filter message log for messages addressed to this channel
+    # Filter message log for messages explicitly sent to this channel.
+    # A direct message can have "to" equal to a channel name, so do not
+    # use the destination field alone here.
     with _lock:
-        ch_messages = [m for m in messages if m.get("to") == channel_name]
+        ch_messages = [
+            m for m in messages
+            if m.get("type") == "channel" and m.get("channel") == channel_name
+        ]
 
     result = {
         "status": "ok",
@@ -714,6 +740,8 @@ def broadcast_channel(headers="guest", body="anonymous"):
         "from": sender,
         "to": channel_name,
         "msg": msg_text,
+        "type": "channel",
+        "channel": channel_name,
         "ts": time.time(),
     }
     with _lock:
@@ -731,6 +759,7 @@ def broadcast_channel(headers="guest", body="anonymous"):
                 "from": sender,
                 "channel": channel_name,
                 "msg": msg_text,
+                "type": "channel",
             }
         )
         raw_request = (
@@ -816,6 +845,8 @@ def receive_message(headers="guest", body="anonymous"):
         "from": sender,
         "to": channel if channel else "me",
         "msg": msg_text,
+        "type": "channel" if channel else "direct",
+        "channel": channel,
         "ts": time.time(),
     }
     with _lock:

@@ -145,7 +145,9 @@ function switchChannel(channelName) {
     document
         .querySelectorAll(".channel-item")
         .forEach((el) => el.classList.remove("active"));
-    const target = document.querySelector(`[data-channel="${channelName}"]`);
+    const target = Array.from(document.querySelectorAll("[data-channel]")).find(
+        (el) => el.dataset.channel === channelName,
+    );
     if (target) target.classList.add("active");
 
     document.getElementById("chatTitle").textContent = "# " + channelName;
@@ -462,6 +464,7 @@ async function sendBroadcastMsg() {
         if (res.ok) {
             const data = await res.json();
             document.getElementById("messageInput").value = "";
+            await fetchMessages();
             showToast(
                 `Broadcast sent! Delivered: ${data.delivered?.length || 0} peer(s)`,
             );
@@ -641,8 +644,14 @@ async function createChannel() {
         .getElementById("newChannelName")
         .value.trim()
         .toLowerCase()
-        .replace(/\s+/g, "-");
+        .replace(/^#+/, "")
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9_-]/g, "");
     if (!name) return;
+    if (name === "direct") {
+        showToast("Channel name is reserved.");
+        return;
+    }
 
     // Channels are local: just add to sidebar and start using broadcast-channel
     if (!joinedChannels.includes(name)) {
@@ -660,7 +669,12 @@ function addChannelToSidebar(name) {
     li.className = "channel-item";
     li.setAttribute("data-channel", name);
     li.addEventListener("click", () => switchChannel(name));
-    li.innerHTML = `<span class="ch-hash">#</span><span>${name}</span>`;
+    const hash = document.createElement("span");
+    hash.className = "ch-hash";
+    hash.textContent = "#";
+    const label = document.createElement("span");
+    label.textContent = name;
+    li.append(hash, label);
     list.appendChild(li);
 }
 
