@@ -9,6 +9,7 @@ let seenDirectMessageKeys = new Set();
 let channelMessages = {}; // { channelName: Array<message> }
 let lastChannelMsgCounts = {}; // { channelName: count }
 let seenChannelMessageKeys = {}; // { channelName: Set<string> }
+let channelMetadata = {}; // { channelName: {version, updated_at, deleted, ...} }
 // knownPeers: { username: {ip, port} }  (converted from server's list format)
 let knownPeers = {};
 let joinedChannels = ["general"];
@@ -344,6 +345,7 @@ function switchDirectConversation(username) {
             ip: knownPeers[username].ip,
             port: knownPeers[username].port,
             online: knownPeers[username].online,
+            online_since: knownPeers[username].online_since || 0,
             public_key: knownPeers[username].public_key || "",
         };
     } else if (!selectedPeer || selectedPeer.username !== username) {
@@ -456,6 +458,7 @@ async function getPeerList(showFeedback = true) {
                 port: p.port,
                 online: p.online !== false,
                 last_seen: p.last_seen,
+                online_since: p.online_since || 0,
                 public_key: p.public_key || "",
             };
         });
@@ -468,6 +471,7 @@ async function getPeerList(showFeedback = true) {
                     ip: currentSelection.ip,
                     port: currentSelection.port,
                     online: currentSelection.online,
+                    online_since: currentSelection.online_since || 0,
                     public_key: currentSelection.public_key || "",
                 };
             } else {
@@ -495,6 +499,7 @@ async function getPeerList(showFeedback = true) {
                             port: info.port,
                             online: info.online,
                             last_seen: info.last_seen,
+                            online_since: info.online_since || 0,
                             public_key: info.public_key || "",
                         }),
                         credentials: "include",
@@ -525,6 +530,7 @@ function selectPeer(username) {
         ip: info.ip,
         port: info.port,
         online: info.online,
+        online_since: info.online_since || 0,
         public_key: info.public_key || "",
     };
     ensureDirectConversation(username);
@@ -758,11 +764,7 @@ async function sendBroadcastMsg() {
 
     const myName = document.getElementById("myName").value;
     try {
-        const peers = Object.entries(knownPeers).map(([username, info]) => ({
-            username,
-            ip: info.ip,
-            port: info.port,
-        }));
+        const peers = peerPayloadList();
         const res = await fetch(`${getMyBaseUrl()}/broadcast-peer`, {
             method: "POST",
             headers: authHeaders({ "Content-Type": "application/json" }),
@@ -939,6 +941,7 @@ function resetHistoryMemory() {
     channelMessages = {};
     lastChannelMsgCounts = {};
     seenChannelMessageKeys = {};
+    channelMetadata = {};
     lastMsgCount = 0;
     currentDirectPeer = null;
     document
@@ -1221,11 +1224,7 @@ async function createChannel() {
         await getPeerList(false);
 
         const myName = document.getElementById("myName").value;
-        const peers = Object.entries(knownPeers).map(([username, info]) => ({
-            username,
-            ip: info.ip,
-            port: info.port,
-        }));
+        const peers = peerPayloadList();
 
         const localRes = await fetch(`${getMyBaseUrl()}/create-channel`, {
             method: "POST",
@@ -1245,19 +1244,12 @@ async function createChannel() {
         }
 
         const channelName = normalizeChannelName(data.channel || name);
-
-        fetch(`${getTrackerUrl()}/create-channel`, {
-            method: "POST",
-            headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({
-                channel: channelName,
-                username: myName,
-                ip: getMyIp(),
-                port: document.getElementById("myPort").value,
-                announce: false,
-            }),
-            credentials: "include",
-        }).catch(() => {});
+        await updateTrackerChannel("create-channel", "POST", {
+            channel: channelName,
+            username: myName,
+            ip: getMyIp(),
+            port: document.getElementById("myPort").value,
+        });
 
         ensureChannelInSidebar(channelName);
         showToast(
@@ -1279,6 +1271,7 @@ function ensureChannelInSidebar(name) {
 
 function removeChannelFromSidebar(name) {
     joinedChannels = joinedChannels.filter((channel) => channel !== name);
+    delete channelMetadata[name];
     delete lastChannelMsgCounts[name];
     delete seenChannelMessageKeys[name];
 
@@ -1336,64 +1329,337 @@ function addChannelToSidebar(name) {
     list.appendChild(li);
 }
 
-async function syncChannels() {
-    if (!isAuthenticated) return;
+/**
+ * Apply a tracker-discovered channel rename to browser state.
+ *
+ * The tracker sends rename information as metadata: old channel is a deleted
+ * tombstone with `renamed_to`, and the new channel has `previous_name`. This
+ * function moves in-memory history and IndexedDB history so users keep their
+ * old messages under the new channel name after returning from offline.
+ */
+async function applyChannelRename(oldName, newName) {
+    oldName = normalizeChannelName(oldName);
+    newName = normalizeChannelName(newName);
+    if (
+        !oldName ||
+        !newName ||
+        oldName === newName ||
+        !joinedChannels.includes(oldName)
+    ) {
+        return;
+    }
 
-    const endpoints = [getTrackerUrl(), getMyBaseUrl()];
-    const names = new Set(["general"]);
-    let successfulSyncs = 0;
+    // Keep message IDs unchanged. Only the channel routing fields move, which
+    // preserves dedupe behavior after imported history arrives from peers.
+    const renamedMessages = (channelMessages[oldName] || []).map((msg) =>
+        Object.assign({}, msg, {
+            channel: newName,
+            to: msg.to === oldName ? newName : msg.to,
+        }),
+    );
+    channelMessages[newName] = renamedMessages;
+    seenChannelMessageKeys[newName] = new Set(
+        renamedMessages.map((msg) => msg.id),
+    );
+    lastChannelMsgCounts[newName] = renamedMessages.length;
+    delete channelMessages[oldName];
+    delete seenChannelMessageKeys[oldName];
+    delete lastChannelMsgCounts[oldName];
+    delete channelMetadata[oldName];
 
+    const item = document.querySelector(`[data-channel="${oldName}"]`);
+    if (item) item.remove();
+    joinedChannels = joinedChannels.filter((channel) => channel !== oldName);
+    ensureChannelInSidebar(newName);
+
+    if (window.ChatHistoryDB && currentOwner()) {
+        await window.ChatHistoryDB.renameChannel(
+            currentOwner(),
+            oldName,
+            newName,
+        );
+    }
+    if (currentView === oldName) switchChannel(newName);
+}
+
+/**
+ * Build this browser's local history cursor for one channel.
+ *
+ * Peer backends expose the same shape through `/channel-sync-state`. Comparing
+ * local and remote cursors lets us avoid downloading history from peers that do
+ * not have anything newer than the current IndexedDB/in-memory copy.
+ */
+function localChannelSyncState(channelName) {
+    const messages = channelMessages[channelName] || [];
+    if (!messages.length) {
+        return { latest_ts: 0, latest_id: "", message_count: 0 };
+    }
+    const sorted = [...messages].sort((a, b) =>
+        (a.ts || 0) === (b.ts || 0)
+            ? String(a.id || "").localeCompare(String(b.id || ""))
+            : (a.ts || 0) - (b.ts || 0),
+    );
+    const latest = sorted[sorted.length - 1];
+    return {
+        latest_ts: latest.ts || 0,
+        latest_id: latest.id || "",
+        message_count: sorted.length,
+    };
+}
+
+/**
+ * Return currently online peers except this user.
+ *
+ * Channel history sync is peer-to-peer. Offline peers stay visible in the Peers
+ * list, but they are skipped here because their local backend cannot answer
+ * `/channel-sync-state` or `/channel-history`.
+ */
+function onlinePeerEntries() {
+    const myName = document.getElementById("myName").value;
+    return Object.entries(knownPeers)
+        .filter(
+            ([username, info]) => username !== myName && info.online !== false,
+        )
+        .map(([username, info]) => ({ username, info }));
+}
+
+/**
+ * Ask all online peers for lightweight channel freshness summaries.
+ *
+ * This is a fanout probe, not a message transfer. Each peer returns latest
+ * timestamp, latest id, and message count for requested channels. Failed peers
+ * are ignored so one disconnected backend does not block reconciliation.
+ */
+async function fetchPeerChannelStates(channelNames) {
+    const results = [];
     await Promise.all(
-        endpoints.map(async (baseUrl) => {
+        onlinePeerEntries().map(async ({ username, info }) => {
             try {
-                const res = await fetch(`${baseUrl}/get-channels`, {
-                    headers: authHeaders(),
-                    credentials: "include",
-                });
+                const res = await fetch(
+                    `http://${info.ip}:${info.port}/channel-sync-state`,
+                    {
+                        method: "POST",
+                        headers: authHeaders({
+                            "Content-Type": "application/json",
+                        }),
+                        body: JSON.stringify({ channels: channelNames }),
+                        credentials: "include",
+                    },
+                );
                 if (!res.ok) return;
                 const data = await readJsonResponse(res);
-                successfulSyncs++;
-                const channelNames = Array.isArray(data.names)
-                    ? data.names
-                    : Object.keys(data.channels || {});
-                channelNames.forEach((name) => {
-                    const normalized = normalizeChannelName(name);
-                    if (normalized) names.add(normalized);
-                });
+                results.push({ username, info, channels: data.channels || {} });
             } catch (e) {
-                // Channel discovery is best-effort. Chat still works with
-                // already-known channels if one source is unavailable.
+                // Try the next peer; sync is best-effort.
             }
         }),
     );
-
-    if (successfulSyncs === 0) return;
-
-    joinedChannels
-        .filter(
-            (name) => !names.has(name) && !(channelMessages[name] || []).length,
-        )
-        .forEach((name) => removeChannelFromSidebar(name));
-    names.forEach((name) => ensureChannelInSidebar(name));
+    return results;
 }
 
+/**
+ * Choose the best peer to provide missing history for a channel.
+ *
+ * Selection order matches the plan:
+ * 1. peer is online and reports `has_channel`;
+ * 2. newest `latest_ts`;
+ * 3. highest `message_count`;
+ * 4. longest active time, approximated by earliest `online_since`.
+ */
+function chooseHistorySource(channelName, peerStates) {
+    return peerStates
+        .filter((entry) => entry.channels[channelName]?.has_channel)
+        .sort((a, b) => {
+            const aState = a.channels[channelName];
+            const bState = b.channels[channelName];
+            const freshness =
+                (bState.latest_ts || 0) - (aState.latest_ts || 0) ||
+                (bState.message_count || 0) - (aState.message_count || 0);
+            if (freshness !== 0) return freshness;
+            return (
+                (a.info.online_since || a.info.last_seen || 0) -
+                (b.info.online_since || b.info.last_seen || 0)
+            );
+        })[0];
+}
+
+/**
+ * Import channel messages fetched from another peer.
+ *
+ * Messages are normalized into the same shape as live/polled messages, written
+ * to IndexedDB, and deduplicated by immutable message ID. The final sort uses
+ * `(ts, id)` so the UI is stable even when timestamps are equal.
+ */
+async function importChannelMessages(channelName, messages) {
+    const owner = currentOwner();
+    if (!seenChannelMessageKeys[channelName]) {
+        seenChannelMessageKeys[channelName] = new Set();
+    }
+    if (!channelMessages[channelName]) {
+        channelMessages[channelName] = [];
+    }
+
+    let changed = false;
+    for (const msg of messages) {
+        const record = normalizeChannelHistoryMessage(channelName, msg, owner);
+        if (seenChannelMessageKeys[channelName].has(record.id)) continue;
+        seenChannelMessageKeys[channelName].add(record.id);
+        channelMessages[channelName].push(record);
+        await persistHistoryMessage(record);
+        changed = true;
+    }
+
+    if (changed) {
+        channelMessages[channelName].sort((a, b) =>
+            (a.ts || 0) === (b.ts || 0)
+                ? String(a.id || "").localeCompare(String(b.id || ""))
+                : (a.ts || 0) - (b.ts || 0),
+        );
+        lastChannelMsgCounts[channelName] = channelMessages[channelName].length;
+        if (currentView === channelName) renderChannelMessages(channelName);
+    }
+}
+
+/**
+ * Pull missing channel history from the best online peer per channel.
+ *
+ * The tracker gives us channel metadata only. For actual messages we compare
+ * local freshness with online peer summaries, then fetch messages newer than
+ * our local `(latest_ts, latest_id)` cursor from the selected peer.
+ */
+async function reconcileChannelHistory(channelNames) {
+    const peers = onlinePeerEntries();
+    if (!peers.length) return;
+
+    const peerStates = await fetchPeerChannelStates(channelNames);
+    for (const channelName of channelNames) {
+        const localState = localChannelSyncState(channelName);
+        const source = chooseHistorySource(channelName, peerStates);
+        if (!source) continue;
+        const remoteState = source.channels[channelName];
+        const remoteNewer =
+            (remoteState.latest_ts || 0) > (localState.latest_ts || 0) ||
+            ((remoteState.latest_ts || 0) === (localState.latest_ts || 0) &&
+                (remoteState.message_count || 0) >
+                    (localState.message_count || 0));
+        if (!remoteNewer) {
+            continue;
+        }
+
+        try {
+            const res = await fetch(
+                `http://${source.info.ip}:${source.info.port}/channel-history`,
+                {
+                    method: "POST",
+                    headers: authHeaders({
+                        "Content-Type": "application/json",
+                    }),
+                    body: JSON.stringify({
+                        channel: channelName,
+                        after_ts: localState.latest_ts,
+                        after_id: localState.latest_id,
+                    }),
+                    credentials: "include",
+                },
+            );
+            if (!res.ok) continue;
+            const data = await readJsonResponse(res);
+            await importChannelMessages(channelName, data.messages || []);
+        } catch (e) {
+            // If the chosen peer disconnects, the next scheduled sync can retry.
+        }
+    }
+}
+
+/**
+ * Reconcile local channel sidebar/history against tracker metadata.
+ *
+ * This runs after login, session restore, and peer discovery. The tracker is
+ * the source of truth for channel names, versions, deletes, and renames; peer
+ * backends remain the source for message history. Deleted channels are hidden,
+ * renamed channels move local history, and active channels then try P2P history
+ * repair from online peers.
+ */
+async function syncChannels() {
+    if (!isAuthenticated) return;
+
+    try {
+        const res = await fetch(`${getTrackerUrl()}/get-channels`, {
+            headers: authHeaders(),
+            credentials: "include",
+        });
+        if (!res.ok) return;
+        const data = await readJsonResponse(res);
+        const metadata = data.metadata || data.channels || {};
+        const activeNames = new Set(["general"]);
+
+        for (const [rawName, record] of Object.entries(metadata)) {
+            const name = normalizeChannelName(record.name || rawName);
+            if (!name) continue;
+            channelMetadata[name] = Object.assign({}, record, { name });
+
+            if (record.deleted) {
+                if (record.renamed_to) continue;
+                removeChannelFromSidebar(name);
+                continue;
+            }
+
+            if (record.previous_name) {
+                await applyChannelRename(record.previous_name, name);
+            }
+            activeNames.add(name);
+            ensureChannelInSidebar(name);
+        }
+
+        joinedChannels
+            .filter((name) => !activeNames.has(name))
+            .forEach((name) => removeChannelFromSidebar(name));
+
+        await reconcileChannelHistory(Array.from(activeNames));
+    } catch (e) {
+        // Channel discovery is best-effort. Chat still works with local state.
+    }
+}
+
+/**
+ * Build a peer list payload for local backend fanout routes.
+ *
+ * The backend receives the latest tracker-discovered presence fields so it can
+ * skip offline peers during broadcast/announce and use online time as a
+ * history-sync tie-breaker.
+ */
 function peerPayloadList() {
     return Object.entries(knownPeers).map(([username, info]) => ({
         username,
         ip: info.ip,
         port: info.port,
+        online: info.online,
+        last_seen: info.last_seen,
+        online_since: info.online_since || 0,
     }));
 }
 
+/**
+ * Update tracker channel metadata without asking tracker to announce P2P.
+ *
+ * Local peer backends handle live P2P announcements. The tracker call only
+ * records metadata changes for users who were offline and need reconciliation
+ * later, so `announce:false` is always attached here.
+ */
 async function updateTrackerChannel(endpoint, method, body) {
     if (!isAuthenticated) return;
 
-    return fetch(`${getTrackerUrl()}/${endpoint}`, {
+    const res = await fetch(`${getTrackerUrl()}/${endpoint}`, {
         method,
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(Object.assign({}, body, { announce: false })),
         credentials: "include",
-    }).catch(() => {});
+    });
+    const data = await readJsonResponse(res);
+    if (!res.ok || data.status === "error") {
+        throw new Error(data.message || `HTTP ${res.status}`);
+    }
+    return data;
 }
 
 async function renameChannel(oldName) {

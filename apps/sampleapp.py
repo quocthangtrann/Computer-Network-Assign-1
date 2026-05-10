@@ -67,7 +67,7 @@ from daemon import AsynapRous
 
 # Registered peers: list of {
 #   "username": str, "ip": str, "port": str,
-#   "online": bool, "last_seen": float, "public_key": str
+#   "online": bool, "last_seen": float, "online_since": float, "public_key": str
 # }
 peer_list = []
 
@@ -86,6 +86,18 @@ held_messages = []
 
 # Channels: {channel_name: [{"username": str, "ip": str, "port": str}, ...]}
 channels = {"general": []}
+
+# Channel metadata catalog. The tracker is the authoritative catalog, while
+# peer backends keep a local copy for reconciliation and history sync.
+channel_catalog = {
+    "general": {
+        "name": "general",
+        "version": 1,
+        "updated_at": time.time(),
+        "deleted": False,
+        "members": [],
+    }
+}
 
 # Thread lock for shared state mutations
 _lock = threading.Lock()
@@ -192,8 +204,9 @@ def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
 
     Registration should not create duplicate users. This helper keeps one
     record per username, updates the latest reachable IP/port, records online
-    state, refreshes ``last_seen``, and stores the browser-generated public key
-    used for direct-message encryption.
+    state, refreshes ``last_seen``, tracks the current online session start
+    time, and stores the browser-generated public key used for direct-message
+    encryption.
 
     :param username: Authenticated username being registered.
     :param peer_ip: Reachable LAN IP for the user's peer backend.
@@ -213,12 +226,15 @@ def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
             "port": peer_port,
             "online": bool(online),
             "last_seen": now,
+            "online_since": now if online else 0,
             "public_key": public_key or "",
         }
         peer_list.append(peer)
     else:
         peer["ip"] = peer_ip or peer.get("ip", "")
         peer["port"] = peer_port or peer.get("port", "")
+        if online and not was_online:
+            peer["online_since"] = now
         peer["online"] = bool(online)
         peer["last_seen"] = now
         if public_key is not None:
@@ -255,6 +271,10 @@ def mark_user_offline(username):
         changed += before_members - len(channels[channel_name])
         if channel_name != "general" and not channels[channel_name]:
             del channels[channel_name]
+        if channel_name in channel_catalog:
+            channel_catalog[channel_name]["members"] = list(
+                channels.get(channel_name, [])
+            )
 
     return changed
 
@@ -541,6 +561,121 @@ def normalize_channel_name(name):
     return name
 
 
+def ensure_channel_record(channel_name):
+    """Ensure a channel has both member-list and metadata records.
+
+    Channel state is split on purpose:
+    - ``channels`` tracks local peer membership and is used for live P2P fanout.
+    - ``channel_catalog`` tracks metadata that the tracker can publish to peers.
+
+    This helper is called before mutating or reading channel metadata so older
+    code paths that only created ``channels[name]`` still get a matching
+    metadata record.
+    """
+    channel_name = normalize_channel_name(channel_name) or "general"
+    channels.setdefault(channel_name, [])
+    if channel_name not in channel_catalog:
+        channel_catalog[channel_name] = {
+            "name": channel_name,
+            "version": 1,
+            "updated_at": time.time(),
+            "deleted": False,
+            "members": list(channels.get(channel_name, [])),
+        }
+    return channel_catalog[channel_name]
+
+
+def touch_channel_record(channel_name, deleted=False, extra=None):
+    """Bump one channel metadata record after create, rename, delete, or send.
+
+    The monotonically increasing ``version`` and ``updated_at`` timestamp let a
+    returning client compare its local IndexedDB/sidebar state with the tracker
+    catalog. A deleted channel remains in ``channel_catalog`` as a tombstone, so
+    clients that were offline can still learn that the channel should disappear
+    or that it was renamed.
+    """
+    channel_name = normalize_channel_name(channel_name) or "general"
+    # Deleted records may no longer exist in ``channels``. Do not recreate an
+    # active member list for a tombstone; only preserve/update its metadata.
+    if deleted and channel_name not in channels:
+        record = channel_catalog.setdefault(
+            channel_name,
+            {
+                "name": channel_name,
+                "version": 0,
+                "updated_at": time.time(),
+                "deleted": False,
+                "members": [],
+            },
+        )
+    else:
+        record = ensure_channel_record(channel_name)
+    record["version"] = int(record.get("version", 0)) + 1
+    record["updated_at"] = time.time()
+    record["deleted"] = bool(deleted)
+    record["members"] = list(channels.get(channel_name, []))
+    if extra:
+        record.update(extra)
+    return dict(record)
+
+
+def channel_metadata_snapshot(include_deleted=True):
+    """Return a copy of channel metadata for API responses.
+
+    The API must not expose the mutable dictionaries stored in memory. Returning
+    copies prevents route callers from accidentally changing global state while
+    building JSON responses.
+    """
+    ensure_channel_record("general")
+    snapshot = {}
+    for name, record in channel_catalog.items():
+        if record.get("deleted") and not include_deleted:
+            continue
+        copied = dict(record)
+        copied["members"] = list(copied.get("members", []))
+        snapshot[name] = copied
+    return snapshot
+
+
+def channel_messages_for(channel_name):
+    """Return sorted local history for one channel.
+
+    History remains peer-owned. The tracker only stores metadata, so peer
+    backends answer history-sync requests from their own ``messages`` list.
+    Sorting by ``(ts, id)`` makes cursor-based sync deterministic even when two
+    messages share the same timestamp.
+    """
+    return sorted(
+        [
+            m
+            for m in messages
+            if m.get("type") == "channel" and m.get("channel") == channel_name
+        ],
+        key=lambda m: (m.get("ts") or 0, m.get("id", "")),
+    )
+
+
+def latest_channel_state(channel_name):
+    """Summarize local history freshness for peer selection.
+
+    Returning users ask online peers for this lightweight summary before
+    downloading any history. The client chooses the peer with the newest
+    ``latest_ts`` and largest ``message_count``, then fetches only the missing
+    messages from that peer.
+    """
+    ch_messages = channel_messages_for(channel_name)
+    latest = ch_messages[-1] if ch_messages else {}
+    return {
+        "channel": channel_name,
+        "has_channel": channel_name in channels
+        and not channel_catalog.get(channel_name, {}).get("deleted", False),
+        "latest_ts": latest.get("ts", 0),
+        "latest_id": latest.get("id", ""),
+        "message_count": len(ch_messages),
+        "version": channel_catalog.get(channel_name, {}).get("version", 0),
+    }
+
+
 def announce_channel_event(
     event_type, channel_name, username, member, peers, extra=None
 ):
@@ -548,6 +683,7 @@ def announce_channel_event(
         p
         for p in peers
         if p.get("username") != username and p.get("ip") and p.get("port")
+        and p.get("online", True) is not False
     ]
     delivered = []
     failed = []
@@ -828,6 +964,7 @@ def add_list(headers="guest", body="anonymous"):
         "port": peer_port,
         "online": bool(data.get("online", True)),
         "last_seen": data.get("last_seen", time.time()),
+        "online_since": data.get("online_since", 0),
         "public_key": data.get("public_key", ""),
     }
     with _lock:
@@ -1097,6 +1234,7 @@ def broadcast_peer(headers="guest", body="anonymous"):
         p
         for p in source_peers
         if p.get("username") != sender and p.get("ip") and p.get("port")
+        and p.get("online", True) is not False
     ]
 
     delivered = []
@@ -1170,24 +1308,40 @@ def get_messages(headers="guest", body="anonymous"):
 
 @app.route("/get-channels", methods=["GET"])
 def get_channels(headers="guest", body="anonymous"):
-    # Return all available channels and their member lists (Task 2.3).
+    """Return tracker channel metadata used by browser reconciliation.
+
+    ``channels`` contains only active, visible channels for compatibility with
+    older frontend callers. ``metadata`` also includes deleted/renamed channel
+    tombstones so offline clients can correct stale local state after login.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] get_channels called")
     with _lock:
-        channels.setdefault("general", [])
-        ch_snapshot = {ch: list(members) for ch, members in channels.items()}
+        metadata = channel_metadata_snapshot(include_deleted=True)
+        active_metadata = {
+            name: record for name, record in metadata.items() if not record.get("deleted")
+        }
     result = {
         "status": "ok",
-        "channels": ch_snapshot,
-        "names": sorted(ch_snapshot.keys()),
-        "count": len(ch_snapshot),
+        "channels": active_metadata,
+        "metadata": metadata,
+        "names": sorted(active_metadata.keys()),
+        "count": len(active_metadata),
     }
     return json.dumps(result).encode("utf-8")
 
 
 @app.route("/create-channel", methods=["POST"])
 def create_channel(headers="guest", body="anonymous"):
-    # Register a channel and optionally announce it to known peers.
+    """Create or re-activate a channel and optionally announce it to peers.
+
+    The local peer uses this route to update its own backend and send a P2P
+    channel-created event. The browser then calls the tracker with
+    ``announce=False`` so the tracker becomes the metadata source of truth
+    without routing live messages.
+    """
     auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
@@ -1212,10 +1366,15 @@ def create_channel(headers="guest", body="anonymous"):
 
     request_peers = data.get("peers")
     with _lock:
+        # Keep exactly one membership entry per username. This avoids duplicate
+        # fanout targets when a user registers again with a new LAN IP/port.
         members = channels.setdefault(channel_name, [])
         if username:
             members[:] = [m for m in members if m.get("username") != username]
             members.append(member)
+        # Bump metadata after membership changes so the tracker/client can see
+        # that this channel changed while someone may have been offline.
+        metadata = touch_channel_record(channel_name, deleted=False)
         source_peers = (
             request_peers if isinstance(request_peers, list) else list(peer_list)
         )
@@ -1234,6 +1393,7 @@ def create_channel(headers="guest", body="anonymous"):
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "message": "Channel #{} is available".format(channel_name),
         "delivered": delivered,
         "failed": failed,
@@ -1243,6 +1403,12 @@ def create_channel(headers="guest", body="anonymous"):
 
 @app.route("/rename-channel", methods=["POST"])
 def rename_channel(headers="guest", body="anonymous"):
+    """Rename a channel while preserving history and offline reconciliation.
+
+    The old channel is not simply forgotten. It becomes a deleted metadata
+    tombstone with ``renamed_to`` so offline users can map their old IndexedDB
+    history to the new channel name when they come back.
+    """
     auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
@@ -1269,6 +1435,15 @@ def rename_channel(headers="guest", body="anonymous"):
 
     with _lock:
         old_members = channels.pop(old_name, [])
+        # Store a tombstone for the old name before creating the new name. This
+        # is what lets clients distinguish "deleted" from "renamed".
+        touch_channel_record(
+            old_name,
+            deleted=True,
+            extra={"renamed_to": new_name, "members": list(old_members)},
+        )
+        # Merge old members into the new channel, preserving any existing
+        # members and avoiding duplicates by username.
         merged_members = channels.setdefault(new_name, [])
         seen_users = {m.get("username") for m in merged_members}
         for old_member in old_members:
@@ -1281,11 +1456,19 @@ def rename_channel(headers="guest", body="anonymous"):
             ]
             merged_members.append(member)
 
+        # Local peer history is peer-owned, so rename any messages this backend
+        # already has. Browser IndexedDB is renamed separately in index.js.
         for msg in messages:
             if msg.get("type") == "channel" and msg.get("channel") == old_name:
                 msg["channel"] = new_name
                 if msg.get("to") == old_name:
                     msg["to"] = new_name
+
+        metadata = touch_channel_record(
+            new_name,
+            deleted=False,
+            extra={"previous_name": old_name},
+        )
 
         source_peers = (
             request_peers if isinstance(request_peers, list) else list(peer_list)
@@ -1307,6 +1490,7 @@ def rename_channel(headers="guest", body="anonymous"):
         "status": "ok",
         "old_channel": old_name,
         "channel": new_name,
+        "metadata": metadata,
         "delivered": delivered,
         "failed": failed,
     }
@@ -1315,6 +1499,12 @@ def rename_channel(headers="guest", body="anonymous"):
 
 @app.route("/delete-channel", methods=["DELETE", "POST"])
 def delete_channel(headers="guest", body="anonymous"):
+    """Delete a channel locally and publish a metadata tombstone.
+
+    Deleting removes active membership and local channel messages, but the
+    metadata record remains with ``deleted=True``. That tombstone is required so
+    users who were offline during deletion can hide the channel on next sync.
+    """
     auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
@@ -1339,7 +1529,13 @@ def delete_channel(headers="guest", body="anonymous"):
     request_peers = data.get("peers")
 
     with _lock:
+        old_members = list(channels.get(channel_name, []))
         channels.pop(channel_name, None)
+        metadata = touch_channel_record(
+            channel_name,
+            deleted=True,
+            extra={"members": old_members},
+        )
         messages[:] = [
             m
             for m in messages
@@ -1363,6 +1559,7 @@ def delete_channel(headers="guest", body="anonymous"):
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "delivered": delivered,
         "failed": failed,
     }
@@ -1371,7 +1568,12 @@ def delete_channel(headers="guest", body="anonymous"):
 
 @app.route("/receive-channel", methods=["POST"])
 def receive_channel(headers="guest", body="anonymous"):
-    # Receive a P2P channel-created event from another peer.
+    """Apply a P2P channel metadata event from another peer.
+
+    This route keeps peer backends roughly in sync for live operation. The
+    tracker catalog still remains the authoritative repair source when a peer
+    missed events while offline.
+    """
     print("[SampleApp] receive_channel body={}".format(body))
     try:
         data = json.loads(body) if body else {}
@@ -1391,6 +1593,11 @@ def receive_channel(headers="guest", body="anonymous"):
             return json.dumps(result).encode("utf-8")
         with _lock:
             old_members = channels.pop(channel_name, [])
+            touch_channel_record(
+                channel_name,
+                deleted=True,
+                extra={"renamed_to": new_name, "members": list(old_members)},
+            )
             merged_members = channels.setdefault(new_name, [])
             seen_users = {m.get("username") for m in merged_members}
             for member in old_members:
@@ -1402,10 +1609,16 @@ def receive_channel(headers="guest", body="anonymous"):
                     msg["channel"] = new_name
                     if msg.get("to") == channel_name:
                         msg["to"] = new_name
+            metadata = touch_channel_record(
+                new_name,
+                deleted=False,
+                extra={"previous_name": channel_name},
+            )
         result = {
             "status": "ok",
             "old_channel": channel_name,
             "channel": new_name,
+            "metadata": metadata,
             "message": "Channel #{} renamed to #{}".format(channel_name, new_name),
         }
         return json.dumps(result).encode("utf-8")
@@ -1415,7 +1628,13 @@ def receive_channel(headers="guest", body="anonymous"):
             result = {"status": "error", "message": "Cannot delete this channel"}
             return json.dumps(result).encode("utf-8")
         with _lock:
+            old_members = list(channels.get(channel_name, []))
             channels.pop(channel_name, None)
+            metadata = touch_channel_record(
+                channel_name,
+                deleted=True,
+                extra={"members": old_members},
+            )
             messages[:] = [
                 m
                 for m in messages
@@ -1424,6 +1643,7 @@ def receive_channel(headers="guest", body="anonymous"):
         result = {
             "status": "ok",
             "channel": channel_name,
+            "metadata": metadata,
             "message": "Channel #{} deleted".format(channel_name),
         }
         return json.dumps(result).encode("utf-8")
@@ -1441,10 +1661,12 @@ def receive_channel(headers="guest", body="anonymous"):
         if username:
             members[:] = [m for m in members if m.get("username") != username]
             members.append(member)
+        metadata = touch_channel_record(channel_name, deleted=False)
 
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "message": "Channel #{} received".format(channel_name),
     }
     return json.dumps(result).encode("utf-8")
@@ -1468,10 +1690,83 @@ def get_channel_messages(headers="guest", body="anonymous"):
     # A direct message can have "to" equal to a channel name, so do not
     # use the destination field alone here.
     with _lock:
+        ch_messages = channel_messages_for(channel_name)
+
+    result = {
+        "status": "ok",
+        "channel": channel_name,
+        "messages": ch_messages,
+        "count": len(ch_messages),
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/channel-sync-state", methods=["POST"])
+def channel_sync_state(headers="guest", body="anonymous"):
+    """Return local channel history freshness for reconciliation.
+
+    A returning peer calls this on online peers before downloading history. The
+    response is intentionally small: for each requested channel it reports
+    whether this peer has the channel, the latest message cursor, and total
+    message count. The browser uses that to choose the best history source.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
+
+    print("[SampleApp] channel_sync_state body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    requested = data.get("channels")
+    with _lock:
+        if isinstance(requested, list) and requested:
+            names = [normalize_channel_name(name) for name in requested]
+        else:
+            names = list(channel_catalog.keys())
+        states = {
+            name: latest_channel_state(name)
+            for name in names
+            if name and not channel_catalog.get(name, {}).get("deleted", False)
+        }
+
+    result = {"status": "ok", "channels": states}
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/channel-history", methods=["POST"])
+def channel_history(headers="guest", body="anonymous"):
+    """Return channel messages newer than the caller's local sync cursor.
+
+    The cursor is ``(after_ts, after_id)`` instead of timestamp alone. This
+    avoids losing messages when two messages have the same timestamp and gives
+    the browser a stable ordering for deduplication.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
+
+    print("[SampleApp] channel_history body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    channel_name = normalize_channel_name(data.get("channel", ""))
+    try:
+        after_ts = float(data.get("after_ts", 0) or 0)
+    except (TypeError, ValueError):
+        after_ts = 0
+    after_id = data.get("after_id", "") or ""
+    if not channel_name:
+        result = {"status": "error", "message": "channel is required"}
+        return json.dumps(result).encode("utf-8")
+
+    with _lock:
         ch_messages = [
             m
-            for m in messages
-            if m.get("type") == "channel" and m.get("channel") == channel_name
+            for m in channel_messages_for(channel_name)
+            if (m.get("ts") or 0, m.get("id", "")) > (after_ts, after_id)
         ]
 
     result = {
@@ -1485,7 +1780,12 @@ def get_channel_messages(headers="guest", body="anonymous"):
 
 @app.route("/broadcast-channel", methods=["POST"])
 def broadcast_channel(headers="guest", body="anonymous"):
-    # Broadcast a message to all peers in a specific channel (Task 2.3).
+    """Broadcast a channel message directly to peer backends.
+
+    Live channel messages remain P2P. This route stores the sender's local copy,
+    bumps channel metadata for freshness, then sends the message only to online
+    peer backends. The tracker is not used to route message content.
+    """
     if not require_auth(headers):
         return unauthorized_result()
 
@@ -1511,9 +1811,17 @@ def broadcast_channel(headers="guest", body="anonymous"):
         "ts": time.time(),
     }
     with _lock:
-        channels.setdefault(channel_name, [])
+        ensure_channel_record(channel_name)
         messages.append(entry)
-        targets = [p for p in peer_list if p.get("username") != sender]
+        touch_channel_record(channel_name, deleted=False)
+        targets = [
+            p
+            for p in peer_list
+            if p.get("username") != sender
+            and p.get("online", True) is not False
+            and p.get("ip")
+            and p.get("port")
+        ]
 
     delivered = []
     failed = []
@@ -1583,6 +1891,7 @@ def leave_channel(headers="guest", body="anonymous"):
             ]
             if not channels[channel_name]:
                 del channels[channel_name]
+            touch_channel_record(channel_name, deleted=channel_name not in channels)
 
     result = {
         "status": "ok",
@@ -1783,6 +2092,8 @@ PEER_ROUTE_PATHS = {
     "/delete-channel",
     "/receive-channel",
     "/get-channel-messages",
+    "/channel-sync-state",
+    "/channel-history",
     "/broadcast-channel",
     "/leave-channel",
     "/receive-message",
