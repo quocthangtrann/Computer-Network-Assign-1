@@ -65,7 +65,10 @@ from daemon import AsynapRous
 # In-memory stores (peer list, sessions, messages, channels)
 # ---------------------------------------------------------------------------
 
-# Registered peers: list of {"username": str, "ip": str, "port": str}
+# Registered peers: list of {
+#   "username": str, "ip": str, "port": str,
+#   "online": bool, "last_seen": float, "public_key": str
+# }
 peer_list = []
 
 # Active sessions: {token: username}
@@ -74,6 +77,12 @@ sessions = {}
 
 # Message log: list of {"from": str, "msg": str, "ts": float}
 messages = []
+
+# Sender-side outgoing queue for direct messages that could not be delivered.
+outbox_messages = []
+
+# Backup queue for encrypted direct messages held on behalf of another sender.
+held_messages = []
 
 # Channels: {channel_name: [{"username": str, "ip": str, "port": str}, ...]}
 channels = {"general": []}
@@ -162,25 +171,321 @@ def unauthorized_result():
     ).encode("utf-8")
 
 
-def remove_user_presence(username):
+def find_peer(username):
+    """Return the mutable peer registry entry for a username.
+
+    The peer registry is shared by tracker and peer-role processes. Tracker
+    uses it as the global directory with presence state, while peer backends
+    use it as their local routing cache for direct sends and retry delivery.
+
+    :param username: Peer username to find.
+    :returns: The peer dictionary stored in ``peer_list`` or ``None``.
+    """
+    for peer in peer_list:
+        if peer.get("username") == username:
+            return peer
+    return None
+
+
+def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
+    """Insert or update a peer presence record.
+
+    Registration should not create duplicate users. This helper keeps one
+    record per username, updates the latest reachable IP/port, records online
+    state, refreshes ``last_seen``, and stores the browser-generated public key
+    used for direct-message encryption.
+
+    :param username: Authenticated username being registered.
+    :param peer_ip: Reachable LAN IP for the user's peer backend.
+    :param peer_port: Reachable port for the user's peer backend.
+    :param online: Whether the peer should be marked online.
+    :param public_key: Base64 SPKI public key from browser WebCrypto.
+    :returns: ``(peer_copy, was_online)`` for response and broadcast decisions.
+    """
+    now = time.time()
+    peer = find_peer(username)
+    was_online = bool(peer and peer.get("online"))
+
+    if peer is None:
+        peer = {
+            "username": username,
+            "ip": peer_ip,
+            "port": peer_port,
+            "online": bool(online),
+            "last_seen": now,
+            "public_key": public_key or "",
+        }
+        peer_list.append(peer)
+    else:
+        peer["ip"] = peer_ip or peer.get("ip", "")
+        peer["port"] = peer_port or peer.get("port", "")
+        peer["online"] = bool(online)
+        peer["last_seen"] = now
+        if public_key is not None:
+            peer["public_key"] = public_key
+
+    return dict(peer), was_online
+
+
+def mark_user_offline(username):
+    """Mark a user offline without deleting their peer profile.
+
+    Logout should keep the user visible in the Peers list so other users can
+    still select them and queue encrypted direct messages. Channel membership is
+    removed because channels represent currently joined online participants.
+
+    :param username: User leaving the application.
+    :returns: Count of presence/channel records changed.
+    """
     if not username:
         return 0
 
-    removed = 0
-    before_count = len(peer_list)
-    peer_list[:] = [p for p in peer_list if p.get("username") != username]
-    removed += before_count - len(peer_list)
+    changed = 0
+    peer = find_peer(username)
+    if peer and peer.get("online"):
+        peer["online"] = False
+        peer["last_seen"] = time.time()
+        changed += 1
 
     for channel_name in list(channels.keys()):
         before_members = len(channels[channel_name])
         channels[channel_name] = [
             p for p in channels[channel_name] if p.get("username") != username
         ]
-        removed += before_members - len(channels[channel_name])
+        changed += before_members - len(channels[channel_name])
         if channel_name != "general" and not channels[channel_name]:
             del channels[channel_name]
 
-    return removed
+    return changed
+
+
+def parse_peer_response(response):
+    """Parse a raw HTTP response from another peer backend.
+
+    Peer-to-peer delivery uses ``send_to_peer`` with manually built HTTP
+    payloads. This helper extracts the numeric HTTP status and JSON body so the
+    caller can decide whether a delivery, backup-store, or ACK succeeded.
+
+    :param response: Raw HTTP response bytes from ``send_to_peer``.
+    :returns: ``(status_code, json_body)`` or ``(0, {})`` on parse failure.
+    """
+    if not response:
+        return 0, {}
+
+    try:
+        text = response.decode("utf-8", errors="replace")
+        status_line = text.split("\r\n", 1)[0]
+        parts = status_line.split()
+        status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        _, body = text.split("\r\n\r\n", 1)
+        data = json.loads(body) if body else {}
+        return status, data
+    except Exception:
+        return 0, {}
+
+
+def build_json_post(path, host, port, payload):
+    """Build a raw HTTP POST request containing a JSON payload.
+
+    The project intentionally avoids third-party HTTP clients for backend
+    communication. Peer backends therefore exchange raw TCP bytes, and this
+    function centralizes the HTTP framing used by direct delivery, backup
+    storage, and presence-event notifications.
+
+    :param path: Request path on the remote peer backend.
+    :param host: Host header value and target host.
+    :param port: Host header port and target port.
+    :param payload: JSON-serializable request body.
+    :returns: UTF-8 encoded raw HTTP request bytes.
+    """
+    body = json.dumps(payload)
+    return (
+        (
+            "POST {} HTTP/1.1\r\n"
+            "Host: {}:{}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        )
+        .format(path, host, port, len(body), body)
+        .encode("utf-8")
+    )
+
+
+def deliver_direct_message(peer, message):
+    """Attempt one direct peer-to-peer delivery.
+
+    This is the core live-chat path. It sends a direct message from this local
+    peer backend to the recipient's ``/receive-message`` endpoint. The message
+    may contain plaintext for legacy paths or an encrypted WebCrypto envelope
+    for the offline/direct encrypted path.
+
+    :param peer: Target peer record with ``ip`` and ``port``.
+    :param message: Message record containing id/from/to/msg metadata.
+    :returns: ``True`` only when the remote peer returns a successful JSON ACK.
+    """
+    payload = {
+        "id": message["id"],
+        "from": message["from"],
+        "to": message["to"],
+        "msg": message["msg"],
+        "type": "direct",
+        "encrypted": message.get("encrypted", False),
+        "created_at": message.get("created_at", message.get("ts", time.time())),
+    }
+    response = send_to_peer(
+        peer["ip"],
+        peer["port"],
+        build_json_post("/receive-message", peer["ip"], peer["port"], payload),
+    )
+    status, data = parse_peer_response(response)
+    return bool(response and status < 400 and data.get("status") == "ok")
+
+
+def choose_backup_peer(sender, recipient):
+    """Choose one online peer to hold a backup encrypted message.
+
+    Backup peers are best-effort relays. They should not be the sender or final
+    recipient, and they must have a reachable IP/port. The first eligible peer
+    is enough for this assignment feature; the design intentionally avoids
+    complex replica selection or multi-hop routing.
+
+    :param sender: Username that created the queued message.
+    :param recipient: Final target username.
+    :returns: A copy of the chosen peer record or ``None``.
+    """
+    for peer in peer_list:
+        if (
+            peer.get("online")
+            and peer.get("ip")
+            and peer.get("port")
+            and peer.get("username") not in (sender, recipient)
+        ):
+            return dict(peer)
+    return None
+
+
+def send_presence_event(peer, event):
+    """Send one tracker presence event to a peer backend.
+
+    Tracker broadcasts are implemented as multiple fire-and-forget direct HTTP
+    posts so a slow or offline peer does not block tracker registration. The
+    receiving peer uses the event to retry sender outbox and held backup queues.
+
+    :param peer: Online peer that should receive the event.
+    :param event: Presence-event payload, usually ``type=peer-online``.
+    """
+    send_to_peer(
+        peer["ip"],
+        peer["port"],
+        build_json_post("/presence-event", peer["ip"], peer["port"], event),
+    )
+
+
+def broadcast_peer_online_event(peer_entry, exclude_username=None):
+    """Notify currently online peers that a user has come online.
+
+    This is the tracker-side trigger for retry-on-presence. When a user's
+    registration transitions from offline to online, the tracker sends a
+    ``peer-online`` event to all other online peers. Those peers then retry only
+    messages addressed to that username instead of wasting resources polling.
+
+    :param peer_entry: Newly online peer record.
+    :param exclude_username: Username to skip, normally the user who just joined.
+    """
+    event = {
+        "type": "peer-online",
+        "username": peer_entry.get("username"),
+        "ip": peer_entry.get("ip"),
+        "port": peer_entry.get("port"),
+        "public_key": peer_entry.get("public_key", ""),
+        "last_seen": peer_entry.get("last_seen", time.time()),
+    }
+    with _lock:
+        targets = [
+            dict(peer)
+            for peer in peer_list
+            if peer.get("online")
+            and peer.get("username") != exclude_username
+            and peer.get("ip")
+            and peer.get("port")
+        ]
+
+    for peer in targets:
+        threading.Thread(
+            target=send_presence_event,
+            args=(peer, event),
+            daemon=True,
+        ).start()
+
+
+def retry_outbox_for(username, peer):
+    """Retry local sender-outbox messages for a newly online user.
+
+    The sender-side queue stores direct messages that could not be delivered
+    immediately. Presence events call this function with the recipient's latest
+    IP/port. Successfully ACKed messages are removed from the outbox and the
+    local message log is updated to ``delivery_status=delivered``.
+
+    :param username: Recipient username that just came online.
+    :param peer: Latest peer record for that recipient.
+    :returns: Number of outbox messages delivered.
+    """
+    delivered = 0
+    with _lock:
+        candidates = [m for m in outbox_messages if m.get("to") == username]
+
+    for message in candidates:
+        message["attempt_count"] = message.get("attempt_count", 0) + 1
+        if deliver_direct_message(peer, message):
+            with _lock:
+                outbox_messages[:] = [
+                    m for m in outbox_messages if m.get("id") != message.get("id")
+                ]
+                for local_msg in messages:
+                    if local_msg.get("id") == message.get("id"):
+                        local_msg["delivery_status"] = "delivered"
+            delivered += 1
+
+    return delivered
+
+
+def retry_held_for(username, peer):
+    """Retry backup-held messages for a newly online recipient.
+
+    A backup peer keeps encrypted message envelopes on behalf of another sender.
+    When the recipient comes online, the backup peer attempts delivery directly
+    to the recipient and deletes each held copy only after a successful ACK.
+    Expired backup entries are also removed during this pass.
+
+    :param username: Recipient username that just came online.
+    :param peer: Latest peer record for that recipient.
+    :returns: Number of held backup messages delivered.
+    """
+    delivered = 0
+    now = time.time()
+    with _lock:
+        candidates = [
+            m
+            for m in held_messages
+            if m.get("to") == username and m.get("expires_at", 0) > now
+        ]
+
+    for message in candidates:
+        message["attempt_count"] = message.get("attempt_count", 0) + 1
+        if deliver_direct_message(peer, message):
+            with _lock:
+                held_messages[:] = [
+                    m for m in held_messages if m.get("id") != message.get("id")
+                ]
+            delivered += 1
+
+    with _lock:
+        held_messages[:] = [m for m in held_messages if m.get("expires_at", 0) > now]
+
+    return delivered
 
 
 # P2P message helper
@@ -344,7 +649,7 @@ def logout(headers="guest", body="anonymous"):
         if not username:
             username = validate_basic_auth(headers)
 
-        removed_presence = remove_user_presence(username)
+        removed_presence = mark_user_offline(username)
 
     result = {
         "status": "ok",
@@ -444,7 +749,8 @@ def local_info(headers="guest", body="anonymous"):
 @app.route("/submit-info", methods=["POST"])
 def submit_info(headers="guest", body="anonymous"):
     # Register a peer's network information with the tracker (Task 2.3).
-    if not require_auth(headers):
+    auth_user = require_auth(headers)
+    if not auth_user:
         return unauthorized_result()
 
     print("[SampleApp] submit_info body={}".format(body))
@@ -453,21 +759,26 @@ def submit_info(headers="guest", body="anonymous"):
     except Exception:
         data = {}
 
-    username = data.get("username", "unknown")
+    username = auth_user
     peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
+    public_key = data.get("public_key", "")
 
     if not peer_ip or not peer_port:
         result = {"status": "error", "message": "ip and port are required"}
         return json.dumps(result).encode("utf-8")
 
-    # Add peer to registry (avoid duplicates by username)
-    peer_entry = {"username": username, "ip": peer_ip, "port": peer_port}
     with _lock:
-        # Remove old entry for this username if present
-        global peer_list
-        peer_list = [p for p in peer_list if p.get("username") != username]
-        peer_list.append(peer_entry)
+        peer_entry, was_online = upsert_peer(
+            username,
+            peer_ip,
+            peer_port,
+            online=True,
+            public_key=public_key,
+        )
+
+    if not was_online:
+        broadcast_peer_online_event(peer_entry, exclude_username=username)
 
     print("[SampleApp] Registered peer: {}".format(peer_entry))
     result = {
@@ -485,10 +796,12 @@ def get_list(headers="guest", body="anonymous"):
         return unauthorized_result()
 
     print("[SampleApp] get_list called, {} peers".format(len(peer_list)))
+    with _lock:
+        peers = [dict(peer) for peer in peer_list]
     result = {
         "status": "ok",
-        "peers": peer_list,
-        "count": len(peer_list),
+        "peers": peers,
+        "count": len(peers),
     }
     return json.dumps(result).encode("utf-8")
 
@@ -509,11 +822,20 @@ def add_list(headers="guest", body="anonymous"):
     peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
 
-    peer_entry = {"username": username, "ip": peer_ip, "port": peer_port}
+    peer_entry = {
+        "username": username,
+        "ip": peer_ip,
+        "port": peer_port,
+        "online": bool(data.get("online", True)),
+        "last_seen": data.get("last_seen", time.time()),
+        "public_key": data.get("public_key", ""),
+    }
     with _lock:
-        global peer_list
-        peer_list = [p for p in peer_list if p.get("username") != username]
-        peer_list.append(peer_entry)
+        current = find_peer(username)
+        if current:
+            current.update(peer_entry)
+        else:
+            peer_list.append(peer_entry)
 
     result = {"status": "ok", "added": peer_entry, "total": len(peer_list)}
     return json.dumps(result).encode("utf-8")
@@ -589,8 +911,21 @@ def peer_info(headers="guest", body="anonymous"):
 
 @app.route("/send-peer", methods=["POST"])
 def send_peer(headers="guest", body="anonymous"):
-    # Send a direct message to a specific peer (Task 2.3 — Chat Phase).
-    if not require_auth(headers):
+    """Send, queue, or back up one direct peer-to-peer message.
+
+    The browser sends encrypted direct-message envelopes to its own local peer
+    backend. This route first records the message locally so the sender can see
+    it in history, then attempts direct delivery to the recipient peer. If the
+    recipient is offline or unreachable, the message is stored in this peer's
+    in-memory sender outbox and one online backup peer is asked to hold the
+    encrypted envelope as a best-effort relay.
+
+    :param headers: HTTP request headers; must authenticate the sender.
+    :param body: JSON message payload with id, to, msg, encrypted, and peer info.
+    :returns: JSON result describing delivered/queued state and backup holder.
+    """
+    auth_user = require_auth(headers)
+    if not auth_user:
         return unauthorized_result()
 
     print("[SampleApp] send_peer body={}".format(body))
@@ -601,20 +936,34 @@ def send_peer(headers="guest", body="anonymous"):
 
     to_user = data.get("to", "")
     msg_text = data.get("msg", "")
-    sender = data.get("from", "anonymous")
+    sender = auth_user
+    message_id = data.get("id") or uuid.uuid4().hex
+    created_at = data.get("created_at") or time.time()
+    encrypted = bool(data.get("encrypted", False))
 
     # Find target peer in registry (or use explicit ip/port)
     target_ip = data.get("ip", "")
     target_port = data.get("port", "")
+    target_online = data.get("online", True)
+    target_peer = None
 
     if not target_ip or not target_port:
         # Look up peer by username
         with _lock:
             for p in peer_list:
                 if p.get("username") == to_user:
+                    target_peer = dict(p)
                     target_ip = p["ip"]
                     target_port = p["port"]
+                    target_online = p.get("online", True)
                     break
+    else:
+        target_peer = {
+            "username": to_user,
+            "ip": target_ip,
+            "port": target_port,
+            "online": bool(target_online),
+        }
 
     if not target_ip:
         result = {"status": "error", "message": "Peer '{}' not found".format(to_user)}
@@ -622,45 +971,75 @@ def send_peer(headers="guest", body="anonymous"):
 
     # Record message locally so poller can show it immediately (no optimistic render needed)
     entry = {
+        "id": message_id,
         "from": sender,
         "to": to_user,
         "msg": msg_text,
         "type": "direct",
-        "ts": time.time(),
+        "encrypted": encrypted,
+        "created_at": created_at,
+        "ts": created_at,
+        "delivery_status": "sending" if target_online else "queued",
     }
     with _lock:
         messages.append(entry)
 
-    # browser gets a response immediately without waiting for Bob's server.
-    def _deliver_async(ip, port, s, m):
-        """Background worker: send message to peer TCP, do not block caller."""
-        msg_payload = json.dumps({"from": s, "msg": m})
-        raw_request = (
-            "POST /receive-message HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(ip, port, len(msg_payload), msg_payload)
-        send_to_peer(ip, port, raw_request.encode())
+    delivered = False
+    if target_online and target_peer:
+        delivered = deliver_direct_message(target_peer, entry)
 
-    t = threading.Thread(
-        target=_deliver_async,
-        args=(target_ip, target_port, sender, msg_text),
-        daemon=True,
-    )
-    t.start()
+    backup_holder = None
+    if delivered:
+        entry["delivery_status"] = "delivered"
+    else:
+        entry["delivery_status"] = "queued"
+        outbox_entry = dict(entry)
+        outbox_entry.update(
+            {
+                "target_ip": target_ip,
+                "target_port": target_port,
+                "status": "queued",
+                "attempt_count": 0,
+            }
+        )
+
+        with _lock:
+            outbox_messages[:] = [
+                m for m in outbox_messages if m.get("id") != message_id
+            ]
+            outbox_messages.append(outbox_entry)
+
+        backup_peer = choose_backup_peer(sender, to_user)
+        if backup_peer:
+            backup_payload = dict(outbox_entry)
+            backup_payload["expires_at"] = time.time() + 3600
+            response = send_to_peer(
+                backup_peer["ip"],
+                backup_peer["port"],
+                build_json_post(
+                    "/store-backup-message",
+                    backup_peer["ip"],
+                    backup_peer["port"],
+                    backup_payload,
+                ),
+            )
+            status, data = parse_peer_response(response)
+            if response and status < 400 and data.get("status") == "ok":
+                backup_holder = backup_peer.get("username")
+                outbox_entry["backup_holder"] = backup_holder
+                entry["backup_holder"] = backup_holder
 
     # Return immediately — browser shows the message via polling within 2 s
     result = {
         "status": "ok",
-        "message": "Message queued for {} at {}:{}".format(
-            to_user, target_ip, target_port
+        "message": "Message {} for {}".format(
+            "delivered" if delivered else "queued",
+            to_user,
         ),
-        "queued": True,
-        "delivered": False,
+        "id": message_id,
+        "queued": not delivered,
+        "delivered": delivered,
+        "backup_holder": backup_holder,
     }
     return json.dumps(result).encode("utf-8")
 
@@ -775,6 +1154,9 @@ def get_messages(headers="guest", body="anonymous"):
         msg_snapshot = [
             m for m in messages if m.get("type") != "channel" and not m.get("channel")
         ]
+    msg_snapshot.sort(
+        key=lambda m: (m.get("created_at") or m.get("ts") or 0, m.get("id", ""))
+    )
     result = {
         "status": "ok",
         "messages": msg_snapshot,
@@ -1214,6 +1596,18 @@ def leave_channel(headers="guest", body="anonymous"):
 
 @app.route("/receive-message", methods=["POST"])
 def receive_message(headers="guest", body="anonymous"):
+    """Receive a direct or channel message from another peer backend.
+
+    Direct messages may be encrypted browser envelopes. The peer backend stores
+    them as-is, and the recipient browser decrypts them after polling
+    ``/get-messages``. Message IDs are used for deduplication because both a
+    sender outbox and a backup peer can retry the same message when the
+    recipient comes online.
+
+    :param headers: HTTP request headers from the sending peer.
+    :param body: JSON message payload from direct, channel, or backup delivery.
+    :returns: JSON ACK; duplicate IDs return a successful duplicate ACK.
+    """
 
     print("[SampleApp] receive_message body={}".format(body))
     try:
@@ -1224,23 +1618,134 @@ def receive_message(headers="guest", body="anonymous"):
     sender = data.get("from", "unknown")
     msg_text = data.get("msg", "")
     channel = normalize_channel_name(data.get("channel", "")) or None
+    message_id = data.get("id", uuid.uuid4().hex)
+    created_at = data.get("created_at") or time.time()
 
     entry = {
-        "id": data.get("id", uuid.uuid4().hex),
+        "id": message_id,
         "from": sender,
-        "to": channel if channel else "me",
+        "to": channel if channel else data.get("to", "me"),
         "msg": msg_text,
         "type": "channel" if channel else "direct",
         "channel": channel,
-        "ts": time.time(),
+        "encrypted": bool(data.get("encrypted", False)),
+        "created_at": created_at,
+        "delivery_status": "delivered",
+        "ts": created_at,
     }
     with _lock:
+        if any(m.get("id") == message_id for m in messages):
+            result = {"status": "ok", "ack": "duplicate", "duplicate": True}
+            return json.dumps(result).encode("utf-8")
         if channel:
             channels.setdefault(channel, [])
         messages.append(entry)
 
     print("[SampleApp] Received from {}: {}".format(sender, msg_text))
     result = {"status": "ok", "ack": "message received"}
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/presence-event", methods=["POST"])
+def presence_event(headers="guest", body="anonymous"):
+    """Handle a tracker broadcast that a peer has come online.
+
+    Peer backends receive this event from the tracker after another user
+    registers. The handler updates the local routing cache, then retries two
+    targeted queues for that username:
+
+    1. Sender outbox messages created by this peer.
+    2. Backup-held encrypted messages stored for other senders.
+
+    :param headers: HTTP request headers from the peer/tracker POST.
+    :param body: JSON event payload with username, ip, port, and public_key.
+    :returns: JSON result with retry counts for outbox and held messages.
+    """
+    print("[SampleApp] presence_event body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    if data.get("type") != "peer-online":
+        result = {"status": "error", "message": "Unsupported presence event"}
+        return json.dumps(result).encode("utf-8")
+
+    username = data.get("username", "")
+    peer = {
+        "username": username,
+        "ip": data.get("ip", ""),
+        "port": data.get("port", ""),
+        "online": True,
+        "last_seen": data.get("last_seen", time.time()),
+        "public_key": data.get("public_key", ""),
+    }
+
+    with _lock:
+        current = find_peer(username)
+        if current:
+            current.update(peer)
+        elif username:
+            peer_list.append(peer)
+
+    delivered_outbox = retry_outbox_for(username, peer)
+    delivered_held = retry_held_for(username, peer)
+    result = {
+        "status": "ok",
+        "event": "peer-online",
+        "username": username,
+        "delivered_outbox": delivered_outbox,
+        "delivered_held": delivered_held,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/store-backup-message", methods=["POST"])
+def store_backup_message(headers="guest", body="anonymous"):
+    """Store one encrypted direct message as a best-effort backup.
+
+    Senders call this route on one online backup peer when direct delivery to
+    the final recipient fails. The backup peer does not decrypt the message; it
+    stores the encrypted envelope plus delivery metadata and waits for a future
+    ``peer-online`` presence event for the recipient.
+
+    :param headers: HTTP request headers from the sender peer backend.
+    :param body: JSON message envelope and metadata.
+    :returns: JSON ACK containing the stored message id.
+    """
+    print("[SampleApp] store_backup_message body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    message_id = data.get("id") or uuid.uuid4().hex
+    if not data.get("to") or not data.get("msg"):
+        result = {"status": "error", "message": "to and msg are required"}
+        return json.dumps(result).encode("utf-8")
+
+    held_entry = {
+        "id": message_id,
+        "from": data.get("from", ""),
+        "to": data.get("to", ""),
+        "msg": data.get("msg", ""),
+        "type": "direct",
+        "encrypted": bool(data.get("encrypted", False)),
+        "created_at": data.get("created_at") or time.time(),
+        "ts": data.get("created_at") or time.time(),
+        "attempt_count": data.get("attempt_count", 0),
+        "expires_at": data.get("expires_at") or (time.time() + 3600),
+    }
+
+    with _lock:
+        held_messages[:] = [m for m in held_messages if m.get("id") != message_id]
+        held_messages.append(held_entry)
+
+    result = {
+        "status": "ok",
+        "message": "Backup message stored",
+        "id": message_id,
+    }
     return json.dumps(result).encode("utf-8")
 
 
@@ -1281,6 +1786,8 @@ PEER_ROUTE_PATHS = {
     "/broadcast-channel",
     "/leave-channel",
     "/receive-message",
+    "/presence-event",
+    "/store-backup-message",
 }
 
 

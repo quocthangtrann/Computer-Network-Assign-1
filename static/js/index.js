@@ -17,6 +17,8 @@ let trackerApiBase = "";
 let authToken = "";
 let selectedPeer = null;
 let historyReadyForOwner = "";
+let directCryptoKeys = null;
+let directPublicKey = "";
 
 const PEER_COLORS = [
     "#6c5ce7",
@@ -74,6 +76,125 @@ function authHeaders(extra) {
         headers["Authorization"] = "Basic " + authToken;
     }
     return headers;
+}
+
+function bufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+}
+
+function base64ToBuffer(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+function cryptoStorageKey(username) {
+    return `chat_crypto_${username}`;
+}
+
+async function ensureDirectCryptoKeys(username) {
+    if (directCryptoKeys && directPublicKey) {
+        return { keyPair: directCryptoKeys, publicKey: directPublicKey };
+    }
+
+    const stored = JSON.parse(
+        localStorage.getItem(cryptoStorageKey(username)) || "null",
+    );
+    if (stored && stored.privateKey && stored.publicKey) {
+        const privateKey = await crypto.subtle.importKey(
+            "jwk",
+            stored.privateKey,
+            { name: "RSA-OAEP", hash: "SHA-256" },
+            true,
+            ["unwrapKey", "decrypt"],
+        );
+        directCryptoKeys = { privateKey };
+        directPublicKey = stored.publicKey;
+        return { keyPair: directCryptoKeys, publicKey: directPublicKey };
+    }
+
+    const keyPair = await crypto.subtle.generateKey(
+        {
+            name: "RSA-OAEP",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+        },
+        true,
+        ["wrapKey", "unwrapKey"],
+    );
+    const publicSpki = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+    const privateJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
+    const publicKey = bufferToBase64(publicSpki);
+
+    localStorage.setItem(
+        cryptoStorageKey(username),
+        JSON.stringify({ privateKey: privateJwk, publicKey }),
+    );
+    directCryptoKeys = { privateKey: keyPair.privateKey };
+    directPublicKey = publicKey;
+    return { keyPair: directCryptoKeys, publicKey: directPublicKey };
+}
+
+async function encryptDirectMessage(plaintext, recipientPublicKey) {
+    const publicKey = await crypto.subtle.importKey(
+        "spki",
+        base64ToBuffer(recipientPublicKey),
+        { name: "RSA-OAEP", hash: "SHA-256" },
+        true,
+        ["wrapKey"],
+    );
+    const aesKey = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt", "decrypt"],
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        aesKey,
+        new TextEncoder().encode(plaintext),
+    );
+    const wrappedKey = await crypto.subtle.wrapKey("raw", aesKey, publicKey, {
+        name: "RSA-OAEP",
+    });
+
+    return JSON.stringify({
+        alg: "RSA-OAEP-256+A256GCM",
+        wrapped_key: bufferToBase64(wrappedKey),
+        iv: bufferToBase64(iv.buffer),
+        ciphertext: bufferToBase64(ciphertext),
+    });
+}
+
+async function decryptDirectMessage(envelopeText) {
+    if (!directCryptoKeys || !directCryptoKeys.privateKey) {
+        await ensureDirectCryptoKeys(currentOwner());
+    }
+    const envelope = JSON.parse(envelopeText);
+    const aesKey = await crypto.subtle.unwrapKey(
+        "raw",
+        base64ToBuffer(envelope.wrapped_key),
+        directCryptoKeys.privateKey,
+        { name: "RSA-OAEP" },
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"],
+    );
+    const plaintext = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: new Uint8Array(base64ToBuffer(envelope.iv)) },
+        aesKey,
+        base64ToBuffer(envelope.ciphertext),
+    );
+    return new TextDecoder().decode(plaintext);
 }
 
 async function readJsonResponse(response) {
@@ -173,7 +294,7 @@ function renderSignedOutState() {
     document.getElementById("chatMessages").innerHTML =
         '<div class="msg-system">Log in to view chat history and message peers.</div>';
     document.getElementById("peerListDisplay").innerHTML =
-        '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">Log in to discover active peers.</div>';
+        '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">Log in to discover peers.</div>';
     document.getElementById("notificationBadge").classList.remove("show");
     document.getElementById("userStatusSidebar").textContent = "Not registered";
     setStatus("Not logged in", "offline");
@@ -222,6 +343,8 @@ function switchDirectConversation(username) {
             username,
             ip: knownPeers[username].ip,
             port: knownPeers[username].port,
+            online: knownPeers[username].online,
+            public_key: knownPeers[username].public_key || "",
         };
     } else if (!selectedPeer || selectedPeer.username !== username) {
         selectedPeer = { username, ip: "", port: "" };
@@ -273,10 +396,12 @@ async function registerPeer() {
 
     const myName = document.getElementById("myName").value;
     const myPort = document.getElementById("myPort").value;
+    const { publicKey } = await ensureDirectCryptoKeys(myName);
     const payload = JSON.stringify({
         username: myName,
         ip: getMyIp(),
         port: myPort,
+        public_key: publicKey,
     });
     const headers = authHeaders({ "Content-Type": "application/json" });
 
@@ -303,7 +428,7 @@ async function registerPeer() {
 
 /**
  * Fetch peer list from tracker, update own peer list via /add-list,
- * and render the Active Peers panel.
+ * and render the Peers panel.
  * API: GET /get-list  → {status, peers: [{username, ip, port}], count}
  */
 async function getPeerList(showFeedback = true) {
@@ -323,10 +448,16 @@ async function getPeerList(showFeedback = true) {
             throw new Error(data.message || `HTTP ${res.status}`);
         }
 
-        // Convert list [{username, ip, port}] → dict {username: {ip, port}}
+        // Convert list [{username, ip, port, online}] → dict
         knownPeers = {};
         (data.peers || []).forEach((p) => {
-            knownPeers[p.username] = { ip: p.ip, port: p.port };
+            knownPeers[p.username] = {
+                ip: p.ip,
+                port: p.port,
+                online: p.online !== false,
+                last_seen: p.last_seen,
+                public_key: p.public_key || "",
+            };
         });
 
         if (selectedPeer) {
@@ -336,6 +467,8 @@ async function getPeerList(showFeedback = true) {
                     username: selectedPeer.username,
                     ip: currentSelection.ip,
                     port: currentSelection.port,
+                    online: currentSelection.online,
+                    public_key: currentSelection.public_key || "",
                 };
             } else {
                 selectedPeer = null;
@@ -360,6 +493,9 @@ async function getPeerList(showFeedback = true) {
                             username: name,
                             ip: info.ip,
                             port: info.port,
+                            online: info.online,
+                            last_seen: info.last_seen,
+                            public_key: info.public_key || "",
                         }),
                         credentials: "include",
                     }).catch(() => {}),
@@ -369,9 +505,10 @@ async function getPeerList(showFeedback = true) {
         await Promise.all(syncRequests);
 
         renderPeerList();
-        const count = Object.keys(knownPeers).length;
-        setStatus(`${count} peer(s) online`, "success");
-        if (showFeedback) showToast(`Found ${count} peer(s)`);
+        const peers = Object.values(knownPeers);
+        const onlineCount = peers.filter((peer) => peer.online).length;
+        setStatus(`${onlineCount}/${peers.length} peer(s) online`, "success");
+        if (showFeedback) showToast(`Found ${peers.length} peer(s)`);
         await syncChannels();
     } catch (e) {
         setStatus("Discovery failed", "error");
@@ -387,6 +524,8 @@ function selectPeer(username) {
         username,
         ip: info.ip,
         port: info.port,
+        online: info.online,
+        public_key: info.public_key || "",
     };
     ensureDirectConversation(username);
     renderPeerList();
@@ -411,6 +550,7 @@ function renderPeerList() {
         const item = document.createElement("div");
         item.className =
             "peer-item" +
+            (info.online === false ? " offline" : "") +
             (selectedPeer && selectedPeer.username === name ? " selected" : "");
         item.addEventListener("click", () => {
             if (!isSelf) {
@@ -421,7 +561,7 @@ function renderPeerList() {
             <div class="peer-avatar" style="background:${color}">${name.charAt(0).toUpperCase()}</div>
             <span class="peer-name">${name}${isSelf ? " (You)" : ""}</span>
             <span class="peer-port">${info.ip}:${info.port}</span>
-            <div class="peer-status-dot"></div>
+            <div class="peer-status-dot ${info.online === false ? "offline" : ""}"></div>
         `;
         container.appendChild(item);
     }
@@ -503,38 +643,78 @@ async function sendMessage() {
                     username: currentDirectPeer,
                     ip: info.ip,
                     port: info.port,
+                    online: info.online,
+                    public_key: info.public_key || "",
                 };
             }
         }
 
         if (!selectedPeer || !selectedPeer.ip || !selectedPeer.port) {
-            showToast("Select a peer from Active Peers first.");
+            showToast("Select a peer from Peers first.");
             return;
         }
 
         try {
+            if (!selectedPeer.public_key) {
+                showToast("Selected peer has no encryption key yet.");
+                return;
+            }
+
+            const messageId = crypto.randomUUID();
+            const createdAt = Date.now();
+            const encryptedText = await encryptDirectMessage(
+                msgText,
+                selectedPeer.public_key,
+            );
+            const localRecord = {
+                id: messageId,
+                owner: myName,
+                type: "direct",
+                from: myName,
+                to: selectedPeer.username,
+                channel: null,
+                peer: selectedPeer.username,
+                msg: msgText,
+                ts: createdAt,
+                delivery_status:
+                    selectedPeer.online === false ? "queued" : "sending",
+            };
+            seenDirectMessageKeys.add(messageId);
+            directMessages.push(localRecord);
+            directMessages.sort((a, b) => a.ts - b.ts);
+            ensureDirectConversation(selectedPeer.username);
+            renderDirectMessages();
+            await persistHistoryMessage(localRecord);
+
             const res = await fetch(`${getMyBaseUrl()}/send-peer`, {
                 method: "POST",
                 headers: authHeaders({ "Content-Type": "application/json" }),
-                // 'msg' matches our backend API (not 'message')
                 body: JSON.stringify({
+                    id: messageId,
                     from: myName,
                     to: selectedPeer.username,
-                    msg: msgText,
+                    msg: encryptedText,
+                    encrypted: true,
+                    created_at: createdAt,
                     ip: selectedPeer.ip,
                     port: selectedPeer.port,
+                    online: selectedPeer.online,
                 }),
                 credentials: "include",
             });
             if (res.ok) {
-                ensureDirectConversation(selectedPeer.username);
-                // Fix #1 Double-message: do NOT call addMessage() here.
-                // Backend records the message in its list immediately.
-                // We trigger an instant poll so the sender sees it right away
-                // (instead of waiting up to 2 s for the next scheduled poll).
+                const data = await readJsonResponse(res);
+                localRecord.delivery_status = data.delivered
+                    ? "delivered"
+                    : data.backup_holder
+                      ? `queued via ${data.backup_holder}`
+                      : "queued";
                 document.getElementById("messageInput").value = "";
-                await fetchMessages(); // instant refresh — appears once via poll
+                renderDirectMessages();
+                await persistHistoryMessage(localRecord);
             } else {
+                localRecord.delivery_status = "failed";
+                renderDirectMessages();
                 showToast("Failed: HTTP " + res.status);
             }
         } catch (e) {
@@ -625,6 +805,9 @@ function addMessage(msgObj) {
         hour: "2-digit",
         minute: "2-digit",
     });
+    const statusText = msgObj.delivery_status
+        ? `<span class="msg-time">${escapeHtml(msgObj.delivery_status)}</span>`
+        : "";
 
     if (isOwnMessage) {
         group.classList.add("me");
@@ -635,6 +818,7 @@ function addMessage(msgObj) {
             ${escapeHtml(displaySender)}
             <span class="msg-badge ${badgeClass}">${badgeLabel}</span>
             <span class="msg-time">${time}</span>
+            ${statusText}
         </div>
         <div class="msg-text">${escapeHtml(text)}</div>
     `;
@@ -694,11 +878,13 @@ function normalizeDirectHistoryMessage(msg, owner) {
             ? directConversationPartner({ ...msg, type }, owner)
             : null;
     const ts =
-        typeof msg.ts === "number"
-            ? msg.ts
-            : msg.ts
-              ? Number(msg.ts)
-              : Date.now();
+        typeof msg.created_at === "number"
+            ? msg.created_at
+            : typeof msg.ts === "number"
+              ? msg.ts
+              : msg.ts
+                ? Number(msg.ts)
+                : Date.now();
     const record = {
         owner,
         type,
@@ -708,6 +894,8 @@ function normalizeDirectHistoryMessage(msg, owner) {
         peer,
         msg: msg.msg || msg.message || "",
         ts,
+        encrypted: msg.encrypted === true,
+        delivery_status: msg.delivery_status || "",
     };
     record.id = msg.id || directMessageKey(record);
     return record;
@@ -850,7 +1038,12 @@ function renderDirectMessages() {
 
     visibleMessages.forEach((msg) => {
         const from = msg.from === myName ? `${msg.from} (You)` : msg.from;
-        addMessage({ type: msg.type, from, msg: msg.msg });
+        addMessage({
+            type: msg.type,
+            from,
+            msg: msg.msg,
+            delivery_status: msg.delivery_status,
+        });
     });
 }
 
@@ -899,6 +1092,15 @@ async function fetchMessages() {
             const key = typedMsg.id;
             if (seenDirectMessageKeys.has(key)) continue;
 
+            if (typedMsg.encrypted && typedMsg.from !== myName) {
+                try {
+                    typedMsg.msg = await decryptDirectMessage(typedMsg.msg);
+                    typedMsg.encrypted = false;
+                } catch (e) {
+                    typedMsg.msg = "[Encrypted message could not be decrypted]";
+                }
+            }
+
             seenDirectMessageKeys.add(key);
             directMessages.push(typedMsg);
             changed = true;
@@ -913,6 +1115,7 @@ async function fetchMessages() {
 
         lastMsgCount = msgs.length;
         if (changed) {
+            directMessages.sort((a, b) => a.ts - b.ts);
             renderDirectMessages();
             if (newFromOthers > 0) showNotification(newFromOthers);
         }
@@ -1350,6 +1553,8 @@ function closeLoginModal() {
 
 function applyAuthenticatedUser(username) {
     isAuthenticated = true;
+    directCryptoKeys = null;
+    directPublicKey = "";
     document.getElementById("authStatus").textContent =
         "Logged in as " + username;
     document.getElementById("loginBtn").textContent = "Logged In";
@@ -1494,6 +1699,8 @@ function logoutUser() {
 
     isAuthenticated = false;
     authToken = "";
+    directCryptoKeys = null;
+    directPublicKey = "";
     historyReadyForOwner = "";
     localStorage.removeItem("chat_auth");
     document.getElementById("authStatus").textContent = "Not logged in";
