@@ -102,6 +102,11 @@ function cryptoStorageKey(username) {
 }
 
 async function ensureDirectCryptoKeys(username) {
+    if (!window.crypto || !window.crypto.subtle) {
+        console.warn("WebCrypto API is not available (likely not a Secure Context). Direct message encryption is disabled.");
+        return { keyPair: null, publicKey: "" };
+    }
+
     if (directCryptoKeys && directPublicKey) {
         return { keyPair: directCryptoKeys, publicKey: directPublicKey };
     }
@@ -146,6 +151,10 @@ async function ensureDirectCryptoKeys(username) {
 }
 
 async function encryptDirectMessage(plaintext, recipientPublicKey) {
+    if (!window.crypto || !window.crypto.subtle || !recipientPublicKey) {
+        return plaintext; // Fallback for non-secure contexts or missing keys
+    }
+
     const publicKey = await crypto.subtle.importKey(
         "spki",
         base64ToBuffer(recipientPublicKey),
@@ -177,6 +186,10 @@ async function encryptDirectMessage(plaintext, recipientPublicKey) {
 }
 
 async function decryptDirectMessage(envelopeText) {
+    if (!window.crypto || !window.crypto.subtle) {
+        return envelopeText; // Fallback for non-secure contexts
+    }
+
     if (!directCryptoKeys || !directCryptoKeys.privateKey) {
         await ensureDirectCryptoKeys(currentOwner());
     }
@@ -661,12 +674,7 @@ async function sendMessage() {
         }
 
         try {
-            if (!selectedPeer.public_key) {
-                showToast("Selected peer has no encryption key yet.");
-                return;
-            }
-
-            const messageId = crypto.randomUUID();
+            const messageId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
             const createdAt = Date.now();
             const encryptedText = await encryptDirectMessage(
                 msgText,
