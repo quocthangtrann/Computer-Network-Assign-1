@@ -19,6 +19,48 @@ let authToken = "";
 let selectedPeer = null;
 let historyReadyForOwner = "";
 
+// Persist messages to localStorage
+function saveDirectMessages() {
+    try {
+        localStorage.setItem('directMessages', JSON.stringify(directMessages));
+    } catch (e) {
+        console.warn('Failed to save direct messages:', e);
+    }
+}
+
+function loadDirectMessages() {
+    try {
+        const stored = localStorage.getItem('directMessages');
+        if (stored) {
+            directMessages = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.warn('Failed to load direct messages:', e);
+        directMessages = [];
+    }
+}
+
+function saveChannelMessages() {
+    try {
+        localStorage.setItem('channelMessages', JSON.stringify(channelMessages));
+    } catch (e) {
+        console.warn('Failed to save channel messages:', e);
+    }
+}
+
+function loadChannelMessages() {
+    try {
+        const stored = localStorage.getItem('channelMessages');
+        if (stored) {
+            channelMessages = JSON.parse(stored);
+        }
+    } catch (e) {
+        console.warn('Failed to load channel messages:', e);
+        channelMessages = {};
+    }
+}
+
+
 const PEER_COLORS = [
     "#6c5ce7",
     "#00cec9",
@@ -601,10 +643,12 @@ async function sendMessage() {
                       : "queued";
                 document.getElementById("messageInput").value = "";
                 renderDirectMessages();
+                saveDirectMessages();
                 await persistHistoryMessage(localRecord);
             } else {
                 localRecord.delivery_status = "failed";
                 renderDirectMessages();
+                saveDirectMessages();
                 showToast("Failed: HTTP " + res.status);
             }
         } catch (e) {
@@ -1010,6 +1054,7 @@ async function fetchMessages() {
         if (changed) {
             directMessages.sort((a, b) => a.ts - b.ts);
             renderDirectMessages();
+            saveDirectMessages();
             if (newFromOthers > 0) showNotification(newFromOthers);
         }
     } catch (e) {
@@ -1062,6 +1107,7 @@ async function fetchChannelMessages(channelName) {
         if (changed) {
             channelMessages[channelName].sort((a, b) => a.ts - b.ts);
             renderChannelMessages(channelName);
+            saveChannelMessages();
         }
     } catch (e) {
         /* silently ignore */
@@ -2013,6 +2059,8 @@ function bindDomEvents() {
 
 async function bootstrap() {
     bindDomEvents();
+    loadDirectMessages();
+    loadChannelMessages();
     autoConfigure();
     await loadClientInfo();
     await restoreSavedSession();
