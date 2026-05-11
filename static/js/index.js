@@ -731,7 +731,8 @@ function addMessage(msgObj) {
     const isOwnMessage = msgObj.own || (myName && baseSenderName === myName);
     const displaySender = isOwnMessage ? `${baseSenderName} (You)` : senderName;
     const color = getPeerColor(baseSenderName);
-    const time = new Date().toLocaleTimeString([], {
+    const ts = typeof msgObj.ts === "number" ? msgObj.ts : Date.now();
+    const time = new Date(ts).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
     });
@@ -984,6 +985,7 @@ function renderDirectMessages() {
             type: msg.type,
             from,
             msg: msg.msg,
+            ts: msg.ts,
             delivery_status: msg.delivery_status,
         });
     });
@@ -1005,6 +1007,7 @@ function renderChannelMessages(channelName) {
             type: "channel",
             from: msg.from,
             msg: msg.msg,
+            ts: msg.ts,
         });
     });
 }
