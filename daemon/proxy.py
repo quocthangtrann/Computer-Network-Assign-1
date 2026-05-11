@@ -283,22 +283,25 @@ def handle_client(ip, port, conn, addr, routes):
             )
         )
     else:
-        default_result, _ = resolve_default_route(routes)
-        if default_result:
-            resolved_host, resolved_port = default_result
-            print(
-                "[Proxy] Default route {} -> {}:{}".format(
-                    request_path, resolved_host, resolved_port
-                )
-            )
-        else:
-            # Resolve backend destination by Host header for legacy virtual host config.
+        if hostname in routes:
             resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
-            try:
-                resolved_port = int(resolved_port)
-            except ValueError:
-                print("[Proxy] Invalid port value '{}'".format(resolved_port))
-                resolved_port = 9000
+        else:
+            default_result, _ = resolve_default_route(routes)
+            if default_result:
+                resolved_host, resolved_port = default_result
+                print(
+                    "[Proxy] Default route {} -> {}:{}".format(
+                        request_path, resolved_host, resolved_port
+                    )
+                )
+            else:
+                # Resolve backend destination by Host header for legacy virtual host config.
+                resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
+        try:
+            resolved_port = int(resolved_port)
+        except ValueError:
+            print("[Proxy] Invalid port value '{}'".format(resolved_port))
+            resolved_port = 9000
 
     if resolved_host:
         print(
