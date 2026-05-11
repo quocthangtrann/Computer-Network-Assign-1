@@ -67,7 +67,7 @@ from daemon import AsynapRous
 
 # Registered peers: list of {
 #   "username": str, "ip": str, "port": str,
-#   "online": bool, "last_seen": float, "online_since": float, "public_key": str
+#   "online": bool, "last_seen": float, "online_since": float
 # }
 peer_list = []
 
@@ -81,7 +81,7 @@ messages = []
 # Sender-side outgoing queue for direct messages that could not be delivered.
 outbox_messages = []
 
-# Backup queue for encrypted direct messages held on behalf of another sender.
+# Backup queue for direct messages held on behalf of another sender.
 held_messages = []
 
 # Channels: {channel_name: [{"username": str, "ip": str, "port": str}, ...]}
@@ -199,20 +199,18 @@ def find_peer(username):
     return None
 
 
-def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
+def upsert_peer(username, peer_ip, peer_port, online=True):
     """Insert or update a peer presence record.
 
     Registration should not create duplicate users. This helper keeps one
     record per username, updates the latest reachable IP/port, records online
-    state, refreshes ``last_seen``, tracks the current online session start
-    time, and stores the browser-generated public key used for direct-message
-    encryption.
+    state, refreshes ``last_seen``, and tracks the current online session start
+    time.
 
     :param username: Authenticated username being registered.
     :param peer_ip: Reachable LAN IP for the user's peer backend.
     :param peer_port: Reachable port for the user's peer backend.
     :param online: Whether the peer should be marked online.
-    :param public_key: Base64 SPKI public key from browser WebCrypto.
     :returns: ``(peer_copy, was_online)`` for response and broadcast decisions.
     """
     now = time.time()
@@ -227,7 +225,6 @@ def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
             "online": bool(online),
             "last_seen": now,
             "online_since": now if online else 0,
-            "public_key": public_key or "",
         }
         peer_list.append(peer)
     else:
@@ -237,8 +234,6 @@ def upsert_peer(username, peer_ip, peer_port, online=True, public_key=None):
             peer["online_since"] = now
         peer["online"] = bool(online)
         peer["last_seen"] = now
-        if public_key is not None:
-            peer["public_key"] = public_key
 
     return dict(peer), was_online
 
@@ -247,7 +242,7 @@ def mark_user_offline(username):
     """Mark a user offline without deleting their peer profile.
 
     Logout should keep the user visible in the Peers list so other users can
-    still select them and queue encrypted direct messages. Channel membership is
+    still select them and queue direct messages. Channel membership is
     removed because channels represent currently joined online participants.
 
     :param username: User leaving the application.
@@ -339,8 +334,7 @@ def deliver_direct_message(peer, message):
 
     This is the core live-chat path. It sends a direct message from this local
     peer backend to the recipient's ``/receive-message`` endpoint. The message
-    may contain plaintext for legacy paths or an encrypted WebCrypto envelope
-    for the offline/direct encrypted path.
+    is sent as plaintext JSON.
 
     :param peer: Target peer record with ``ip`` and ``port``.
     :param message: Message record containing id/from/to/msg metadata.
@@ -352,7 +346,6 @@ def deliver_direct_message(peer, message):
         "to": message["to"],
         "msg": message["msg"],
         "type": "direct",
-        "encrypted": message.get("encrypted", False),
         "created_at": message.get("created_at", message.get("ts", time.time())),
     }
     response = send_to_peer(
@@ -365,7 +358,7 @@ def deliver_direct_message(peer, message):
 
 
 def choose_backup_peer(sender, recipient):
-    """Choose one online peer to hold a backup encrypted message.
+    """Choose one online peer to hold a backup direct message.
 
     Backup peers are best-effort relays. They should not be the sender or final
     recipient, and they must have a reachable IP/port. The first eligible peer
@@ -420,7 +413,6 @@ def broadcast_peer_online_event(peer_entry, exclude_username=None):
         "username": peer_entry.get("username"),
         "ip": peer_entry.get("ip"),
         "port": peer_entry.get("port"),
-        "public_key": peer_entry.get("public_key", ""),
         "last_seen": peer_entry.get("last_seen", time.time()),
     }
     with _lock:
@@ -475,7 +467,7 @@ def retry_outbox_for(username, peer):
 def retry_held_for(username, peer):
     """Retry backup-held messages for a newly online recipient.
 
-    A backup peer keeps encrypted message envelopes on behalf of another sender.
+    A backup peer keeps messages on behalf of another sender.
     When the recipient comes online, the backup peer attempts delivery directly
     to the recipient and deletes each held copy only after a successful ACK.
     Expired backup entries are also removed during this pass.
@@ -898,7 +890,6 @@ def submit_info(headers="guest", body="anonymous"):
     username = auth_user
     peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
-    public_key = data.get("public_key", "")
 
     if not peer_ip or not peer_port:
         result = {"status": "error", "message": "ip and port are required"}
@@ -910,7 +901,6 @@ def submit_info(headers="guest", body="anonymous"):
             peer_ip,
             peer_port,
             online=True,
-            public_key=public_key,
         )
 
     if not was_online:
@@ -965,7 +955,6 @@ def add_list(headers="guest", body="anonymous"):
         "online": bool(data.get("online", True)),
         "last_seen": data.get("last_seen", time.time()),
         "online_since": data.get("online_since", 0),
-        "public_key": data.get("public_key", ""),
     }
     with _lock:
         current = find_peer(username)
@@ -1050,15 +1039,15 @@ def peer_info(headers="guest", body="anonymous"):
 def send_peer(headers="guest", body="anonymous"):
     """Send, queue, or back up one direct peer-to-peer message.
 
-    The browser sends encrypted direct-message envelopes to its own local peer
-    backend. This route first records the message locally so the sender can see
-    it in history, then attempts direct delivery to the recipient peer. If the
+    The browser sends plaintext direct messages to its own local peer backend.
+    This route first records the message locally so the sender can see it in
+    history, then attempts direct delivery to the recipient peer. If the
     recipient is offline or unreachable, the message is stored in this peer's
     in-memory sender outbox and one online backup peer is asked to hold the
-    encrypted envelope as a best-effort relay.
+    message as a best-effort relay.
 
     :param headers: HTTP request headers; must authenticate the sender.
-    :param body: JSON message payload with id, to, msg, encrypted, and peer info.
+    :param body: JSON message payload with id, to, msg, and peer info.
     :returns: JSON result describing delivered/queued state and backup holder.
     """
     auth_user = require_auth(headers)
@@ -1076,7 +1065,6 @@ def send_peer(headers="guest", body="anonymous"):
     sender = auth_user
     message_id = data.get("id") or uuid.uuid4().hex
     created_at = data.get("created_at") or time.time()
-    encrypted = bool(data.get("encrypted", False))
 
     # Find target peer in registry (or use explicit ip/port)
     target_ip = data.get("ip", "")
@@ -1113,7 +1101,6 @@ def send_peer(headers="guest", body="anonymous"):
         "to": to_user,
         "msg": msg_text,
         "type": "direct",
-        "encrypted": encrypted,
         "created_at": created_at,
         "ts": created_at,
         "delivery_status": "sending" if target_online else "queued",
@@ -1907,11 +1894,9 @@ def leave_channel(headers="guest", body="anonymous"):
 def receive_message(headers="guest", body="anonymous"):
     """Receive a direct or channel message from another peer backend.
 
-    Direct messages may be encrypted browser envelopes. The peer backend stores
-    them as-is, and the recipient browser decrypts them after polling
-    ``/get-messages``. Message IDs are used for deduplication because both a
-    sender outbox and a backup peer can retry the same message when the
-    recipient comes online.
+    Direct messages are plaintext JSON. Message IDs are used for deduplication
+    because both a sender outbox and a backup peer can retry the same message
+    when the recipient comes online.
 
     :param headers: HTTP request headers from the sending peer.
     :param body: JSON message payload from direct, channel, or backup delivery.
@@ -1937,7 +1922,6 @@ def receive_message(headers="guest", body="anonymous"):
         "msg": msg_text,
         "type": "channel" if channel else "direct",
         "channel": channel,
-        "encrypted": bool(data.get("encrypted", False)),
         "created_at": created_at,
         "delivery_status": "delivered",
         "ts": created_at,
@@ -1964,10 +1948,10 @@ def presence_event(headers="guest", body="anonymous"):
     targeted queues for that username:
 
     1. Sender outbox messages created by this peer.
-    2. Backup-held encrypted messages stored for other senders.
+    2. Backup-held messages stored for other senders.
 
     :param headers: HTTP request headers from the peer/tracker POST.
-    :param body: JSON event payload with username, ip, port, and public_key.
+    :param body: JSON event payload with username, ip, and port.
     :returns: JSON result with retry counts for outbox and held messages.
     """
     print("[SampleApp] presence_event body={}".format(body))
@@ -1987,7 +1971,6 @@ def presence_event(headers="guest", body="anonymous"):
         "port": data.get("port", ""),
         "online": True,
         "last_seen": data.get("last_seen", time.time()),
-        "public_key": data.get("public_key", ""),
     }
 
     with _lock:
@@ -2011,12 +1994,12 @@ def presence_event(headers="guest", body="anonymous"):
 
 @app.route("/store-backup-message", methods=["POST"])
 def store_backup_message(headers="guest", body="anonymous"):
-    """Store one encrypted direct message as a best-effort backup.
+    """Store one direct message as a best-effort backup.
 
     Senders call this route on one online backup peer when direct delivery to
-    the final recipient fails. The backup peer does not decrypt the message; it
-    stores the encrypted envelope plus delivery metadata and waits for a future
-    ``peer-online`` presence event for the recipient.
+    the final recipient fails. The backup peer stores the message plus delivery
+    metadata and waits for a future ``peer-online`` presence event for the
+    recipient.
 
     :param headers: HTTP request headers from the sender peer backend.
     :param body: JSON message envelope and metadata.
@@ -2039,7 +2022,6 @@ def store_backup_message(headers="guest", body="anonymous"):
         "to": data.get("to", ""),
         "msg": data.get("msg", ""),
         "type": "direct",
-        "encrypted": bool(data.get("encrypted", False)),
         "created_at": data.get("created_at") or time.time(),
         "ts": data.get("created_at") or time.time(),
         "attempt_count": data.get("attempt_count", 0),
