@@ -1795,7 +1795,7 @@ def broadcast_channel(headers="guest", body="anonymous"):
         "msg": msg_text,
         "type": "channel",
         "channel": channel_name,
-        "ts": time.time(),
+        "ts": int(time.time() * 1000),
     }
     with _lock:
         ensure_channel_record(channel_name)

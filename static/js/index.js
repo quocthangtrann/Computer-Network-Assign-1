@@ -763,7 +763,7 @@ function normalizeDirectHistoryMessage(msg, owner) {
         type === "direct"
             ? directConversationPartner({ ...msg, type }, owner)
             : null;
-    const ts =
+    let ts =
         typeof msg.created_at === "number"
             ? msg.created_at
             : typeof msg.ts === "number"
@@ -771,6 +771,9 @@ function normalizeDirectHistoryMessage(msg, owner) {
               : msg.ts
                 ? Number(msg.ts)
                 : Date.now();
+    if (ts > 0 && ts < 1e11) {
+        ts = ts * 1000;
+    }
     const record = {
         owner,
         type,
@@ -787,12 +790,15 @@ function normalizeDirectHistoryMessage(msg, owner) {
 }
 
 function normalizeChannelHistoryMessage(channelName, msg, owner) {
-    const ts =
+    let ts =
         typeof msg.ts === "number"
             ? msg.ts
             : msg.ts
               ? Number(msg.ts)
               : Date.now();
+    if (ts > 0 && ts < 1e11) {
+        ts = ts * 1000;
+    }
     const channel =
         normalizeChannelName(msg.channel || channelName) || channelName;
     const record = {
