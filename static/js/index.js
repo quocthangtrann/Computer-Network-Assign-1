@@ -907,10 +907,16 @@ function renderDirectMessages() {
 
     const box = document.getElementById("chatMessages");
     const myName = document.getElementById("myName").value;
-    const visibleMessages = directMessages.filter((msg) => {
-        if (!currentDirectPeer) return true;
-        return directConversationPartner(msg, myName) === currentDirectPeer;
-    });
+    const visibleMessages = directMessages
+        .filter((msg) => {
+            if (!currentDirectPeer) return true;
+            return directConversationPartner(msg, myName) === currentDirectPeer;
+        })
+        .sort((a, b) =>
+            (a.ts || 0) === (b.ts || 0)
+                ? String(a.id || "").localeCompare(String(b.id || ""))
+                : (a.ts || 0) - (b.ts || 0),
+        );
 
     box.innerHTML = "";
     if (visibleMessages.length === 0) {
@@ -937,7 +943,11 @@ function renderChannelMessages(channelName) {
     if (currentView !== channelName) return;
 
     const box = document.getElementById("chatMessages");
-    const messages = channelMessages[channelName] || [];
+    const messages = (channelMessages[channelName] || []).slice().sort((a, b) =>
+        (a.ts || 0) === (b.ts || 0)
+            ? String(a.id || "").localeCompare(String(b.id || ""))
+            : (a.ts || 0) - (b.ts || 0),
+    );
     box.innerHTML = `<div class="msg-system">Welcome to #${channelName}</div>`;
 
     messages.forEach((msg) => {
