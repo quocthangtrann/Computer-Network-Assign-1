@@ -171,10 +171,8 @@ class Response:
             elif sub_type == "plain":
                 base_dir = BASE_DIR + "static/"
             elif sub_type == "csv":
-                # TODO: process text/csv
                 base_dir = BASE_DIR + "static/"
             elif sub_type == "xml":
-                # TODO: process text/xml
                 base_dir = BASE_DIR + "static/"
             else:
                 # Fallback for any other text subtype
@@ -192,11 +190,9 @@ class Response:
                 base_dir = BASE_DIR + "apps/"
                 self.headers["Content-Type"] = "application/json"
             elif sub_type == "xml":
-                # TODO: process application/xml
                 base_dir = BASE_DIR + "static/"
                 self.headers["Content-Type"] = "application/xml"
             elif sub_type == "zip":
-                # TODO: process application/zip
                 base_dir = BASE_DIR + "static/"
                 self.headers["Content-Type"] = "application/zip"
             else:
@@ -204,12 +200,10 @@ class Response:
                 self.headers["Content-Type"] = "application/{}".format(sub_type)
 
         elif main_type == "video":
-            # TODO: process video/mp4, video/mpeg, etc.
             base_dir = BASE_DIR + "static/video/"
             self.headers["Content-Type"] = "video/{}".format(sub_type)
 
         elif main_type == "audio":
-            # TODO: process audio types
             base_dir = BASE_DIR + "static/audio/"
             self.headers["Content-Type"] = "audio/{}".format(sub_type)
 
@@ -228,7 +222,6 @@ class Response:
         filepath = os.path.join(base_dir, path.lstrip("/"))
         print("[Response] Serving the object at location {}".format(filepath))
 
-        # TODO: implement the step of fetch the object file
         #       store in the return value of content
         try:
             with open(filepath, "rb") as f:
@@ -254,8 +247,6 @@ class Response:
         """
         reqhdr = request.headers if request.headers else {}
 
-        # TODO: prepare the request authentication
-        # self.auth = ...
 
         # Build the header dict from known fields
         headers = {
@@ -291,7 +282,6 @@ class Response:
         }
         reason = status_reasons.get(self.status_code, "OK")
 
-        # TODO: implement the header building to create formatted header from the provided headers
         # Assemble all lines
         header_lines = ["HTTP/1.1 {} {}".format(self.status_code, reason)]
         for key, value in headers.items():
@@ -414,7 +404,6 @@ class Response:
             self.headers["Content-Type"] = "application/json"
             body = envelop_content if envelop_content else b""
             return self.build_json_response(body)
-        # TODO: add support for other object types (video, audio, xml, zip, …)
         else:
             return self.build_notfound()
 

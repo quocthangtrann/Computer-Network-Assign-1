@@ -63,10 +63,8 @@ from .dictionary import CaseInsensitiveDict
 # Selector instance for callback (event-driven) mode
 sel = selectors.DefaultSelector()
 
-
-mode_async = "callback"     # epoll/select non-blocking, no threads
-# mode_async = "coroutine"  #asyncio async/await
-# mode_async = "threading"  # one thread per connection
+# Default concurrency mode (can be overridden by start_backend.py)
+mode_async = "coroutine"
 
 
 # Handler: threading mode
@@ -97,7 +95,6 @@ async def handle_client_coroutine(reader, writer):
     print("[Backend] Invoke handle_client_coroutine accepted connection from {}".format(addr))
 
     # Create adapter; conn/addr are None in asyncio mode (streams are used instead)
-    # TODO: handle for App hook here (async version)
     daemon = HttpAdapter(None, None, None, None, _coroutine_routes)
     await daemon.handle_client_coroutine(reader, writer)
 
@@ -116,9 +113,8 @@ async def async_server(ip="0.0.0.0", port=7000, routes={}):
     if routes:
         print("[Backend] route settings")
         for key, value in routes.items():
-            isCoFunc = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
-            print("   + ('{}', '{}'): {}{}".format(key[0], key[1], isCoFunc, str(value)))
-
+            is_co_func = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
+            print("   + ('{}', '{}'): {}{}".format(key[0], key[1], is_co_func, str(value)))
     server = await asyncio.start_server(handle_client_coroutine, ip, port)
     async with server:
         await server.serve_forever()
@@ -127,10 +123,10 @@ async def async_server(ip="0.0.0.0", port=7000, routes={}):
 # Main entry point
 
 def run_backend(ip, port, routes):
-    # Start the backend server and listen for incoming connections based on mode_async.
+    # Start the backend server and listen for incoming connections based on mode.
     global mode_async
 
-    print("[Backend] run_backend with routes={}".format(routes))
+    print("[Backend] run_backend with routes={} mode={}".format(routes, mode_async))
 
     # Coroutine mode
     if mode_async == "coroutine":
@@ -150,29 +146,89 @@ def run_backend(ip, port, routes):
         if routes:
             print("[Backend] route settings")
             for key, value in routes.items():
-                isCoFunc = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
-                print("   + ('{}', '{}'): {}{}".format(key[0], key[1], isCoFunc, str(value)))
+                is_co_func = "**ASYNC** " if inspect.iscoroutinefunction(value) else ""
+                print("   + ('{}', '{}'): {}{}".format(key[0], key[1], is_co_func, str(value)))
 
         # Callback (event-driven) mode
+
         if mode_async == "callback":
-            # Register the server socket so sel.select() fires on new connections
-            sel.register(server, selectors.EVENT_READ,
-                         (handle_client_callback, ip, port, routes))
+            sel.register(server, selectors.EVENT_READ, data=("accept", None))
             server.setblocking(False)
+            client_buffers = {}
+            
+            # Create a dedicated event loop for callback mode to run handlers
+            # without blocking the selector loop (we'll process them in batches).
+            handler_loop = asyncio.new_event_loop()
 
             while True:
-                # TODO: implement the step of the client incoming connection
-                #       using non-blocking callback (event-driven) communication
-                # sel.select() blocks until at least one socket is ready
-                events = sel.select(timeout=None)
+                events = sel.select(timeout=0.01) # Small timeout to allow other processing
                 for key, mask in events:
-                    callback, _ip, _port, _routes = key.data
-                    # Accept the new connection
-                    conn, addr = key.fileobj.accept()
-                    # The server socket is non-blocking, so conn inherits it.
-                    # We set it back to blocking so HttpAdapter can read easily.
-                    conn.setblocking(True)
-                    callback(key.fileobj, _ip, _port, conn, addr, _routes)
+                    action, data = key.data
+                    if action == "accept":
+                        conn, addr = key.fileobj.accept()
+                        conn.setblocking(False)
+                        client_buffers[conn] = b""
+                        sel.register(conn, selectors.EVENT_READ, data=("read", (ip, port, addr, routes)))
+                    elif action == "read":
+                        conn = key.fileobj
+                        _ip, _port, addr, _routes = data
+                        try:
+                            chunk = conn.recv(4096)
+                            if chunk:
+                                client_buffers[conn] += chunk
+                                raw = client_buffers[conn]
+                                if b"\r\n\r\n" in raw:
+                                    header_end = raw.find(b"\r\n\r\n")
+                                    header_bytes = raw[:header_end]
+                                    body_received = len(raw) - header_end - 4
+                                    content_length = 0
+                                    for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                                        if line.lower().startswith("content-length:"):
+                                            try:
+                                                content_length = int(line.split(":", 1)[1].strip())
+                                            except ValueError:
+                                                pass
+                                            break
+                                    if body_received >= content_length:
+                                        sel.unregister(conn)
+                                        daemon = HttpAdapter(_ip, _port, conn, addr, _routes)
+                                        msg = raw.decode("utf-8", errors="replace")
+                                        daemon.request.prepare(msg, routes=daemon.routes)
+                                        response = b""
+                                        if daemon.request.hook:
+                                            # Execute hook using the dedicated handler loop
+                                            # still technically "blocks" this iteration, but 
+                                            # it is the standard way to bridge sync/async in callbacks
+                                            # without a full async rewrite.
+                                            response = handler_loop.run_until_complete(daemon.request.hook(daemon.request.headers, daemon.request.body))
+                                        sel.register(conn, selectors.EVENT_WRITE, data=("write", response))
+                            else:
+                                sel.unregister(conn)
+                                conn.close()
+                                client_buffers.pop(conn, None)
+                        except (BlockingIOError, socket.error):
+                            pass
+                        except Exception:
+                            sel.unregister(conn)
+                            conn.close()
+                            client_buffers.pop(conn, None)
+                    elif action == "write":
+                        conn = key.fileobj
+                        resp_data = data
+                        try:
+                            sent = conn.send(resp_data)
+                            if sent < len(resp_data):
+                                sel.modify(conn, selectors.EVENT_WRITE, data=("write", resp_data[sent:]))
+                            else:
+                                sel.unregister(conn)
+                                conn.close()
+                                client_buffers.pop(conn, None)
+                        except (BlockingIOError, socket.error):
+                            pass
+                        except Exception:
+                            sel.unregister(conn)
+                            conn.close()
+                            client_buffers.pop(conn, None)
 
         # Threading (multi-thread) mode
         else:
@@ -180,8 +236,6 @@ def run_backend(ip, port, routes):
                 # Block here until a client connects
                 conn, addr = server.accept()
 
-                # TODO: implement the step of the client incoming connection
-                #       using multi-thread programming with the provided handle_client routine
                 # Spawn a daemon thread so the main loop immediately resumes
                 client_thread = threading.Thread(
                     target=handle_client,
@@ -197,5 +251,4 @@ def run_backend(ip, port, routes):
 
 
 def create_backend(ip, port, routes={}):
-        
     run_backend(ip, port, routes)

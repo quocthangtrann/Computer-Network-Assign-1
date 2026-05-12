@@ -805,6 +805,15 @@ body {
     box-shadow: 0 0 6px var(--green);
 }
 
+.peer-item.offline {
+    opacity: 0.72;
+}
+
+.peer-status-dot.offline {
+    background: var(--text-muted);
+    box-shadow: none;
+}
+
 /* ---- Status Bar ---- */
 .status-bar {
     padding: 12px 16px;

@@ -58,34 +58,12 @@ def parse_virtual_hosts(config_file):
     with open(config_file, 'r') as f:
         config_text = f.read()
 
-    # Path routes are checked before legacy Host routes. A path route can strip
-    # its prefix before forwarding, so /api/login becomes /login at the backend.
-    routes = {"__path_routes__": []}
-
-    default_match = re.search(r'default\s*\{(.*?)\}', config_text, re.DOTALL)
-    if default_match:
-        proxy_pass = re.search(r'proxy_pass\s+http://([^\s;]+);', default_match.group(1))
-        if proxy_pass:
-            routes["__default__"] = proxy_pass.group(1)
-
-    path_blocks = re.findall(r'path\s+"([^"]+)"\s*\{(.*?)\}', config_text, re.DOTALL)
-    for prefix, block in path_blocks:
-        proxy_pass = re.search(r'proxy_pass\s+http://([^\s;]+);', block)
-        if not proxy_pass:
-            continue
-        strip_match = re.search(r'strip_prefix\s+(true|false)', block, re.IGNORECASE)
-        strip_prefix = True if not strip_match else strip_match.group(1).lower() == "true"
-        routes["__path_routes__"].append({
-            "prefix": prefix,
-            "target": proxy_pass.group(1),
-            "strip_prefix": strip_prefix,
-        })
-
-    # Match each legacy host block
+    # Match each host block
     host_blocks = re.findall(r'host\s+"([^"]+)"\s*\{(.*?)\}', config_text, re.DOTALL)
 
     dist_policy_map = ""
 
+    routes = {}
     for host, block in host_blocks:
         proxy_map = {}
 
@@ -99,14 +77,24 @@ def parse_virtual_hosts(config_file):
         policy_match = re.search(r'dist_policy\s+(\w+)', block)
         if policy_match:
             dist_policy_map = policy_match.group(1)
-        else:
+        else: #default policy is round_robin
             dist_policy_map = 'round-robin'
-
-        # Build the mapping and policy
-        if len(proxy_map.get(host, [])) == 1:
-            routes[host] = (proxy_map.get(host, [])[0], dist_policy_map)
+            
+        #
+        # @bksysnet: Build the mapping and policy
+        # TODO: this policy varies among scenarios 
+        #       the default policy is provided with one proxy_pass
+        #       In the multi alternatives of proxy_pass then
+        #       the policy is applied to identify the highes matching
+        #       proxy_pass
+        #
+        if len(proxy_map.get(host,[])) == 1:
+            routes[host] = (proxy_map.get(host,[])[0], dist_policy_map)
+        # esle if:
+        #         TODO:  apply further policy matching here
+        #
         else:
-            routes[host] = (proxy_map.get(host, []), dist_policy_map)
+            routes[host] = (proxy_map.get(host,[]), dist_policy_map)
 
     for key, value in routes.items():
         print(key, value)
@@ -128,15 +116,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Proxy', description='', epilog='Proxy daemon')
     parser.add_argument('--server-ip', default='0.0.0.0')
     parser.add_argument('--server-port', type=int, default=PROXY_PORT)
-    parser.add_argument('--mode', type=str, default='coroutine', choices=['coroutine', 'threading'])
  
     args = parser.parse_args()
     ip = args.server_ip
     port = args.server_port
-    mode = args.mode
 
     routes = parse_virtual_hosts("config/proxy.conf")
 
-    import daemon.proxy
-    daemon.proxy.mode_async = mode
     create_proxy(ip, port, routes)

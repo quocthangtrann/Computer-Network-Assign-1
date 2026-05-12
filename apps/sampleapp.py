@@ -58,6 +58,8 @@ import socket
 import threading
 import time
 import re
+import selectors
+import asyncio
 
 from daemon import AsynapRous
 
@@ -65,7 +67,10 @@ from daemon import AsynapRous
 # In-memory stores (peer list, sessions, messages, channels)
 # ---------------------------------------------------------------------------
 
-# Registered peers: list of {"username": str, "ip": str, "port": str}
+# Registered peers: list of {
+#   "username": str, "ip": str, "port": str,
+#   "online": bool, "last_seen": float, "online_since": float
+# }
 peer_list = []
 
 # Active sessions: {token: username}
@@ -75,11 +80,29 @@ sessions = {}
 # Message log: list of {"from": str, "msg": str, "ts": float}
 messages = []
 
+# Sender-side outgoing queue for direct messages that could not be delivered.
+outbox_messages = []
+
+# Backup queue for direct messages held on behalf of another sender.
+held_messages = []
+
 # Channels: {channel_name: [{"username": str, "ip": str, "port": str}, ...]}
 channels = {"general": []}
 
+# Channel metadata catalog. The tracker is the authoritative catalog, while
+# peer backends keep a local copy for reconciliation and history sync.
+channel_catalog = {
+    "general": {
+        "name": "general",
+        "version": 1,
+        "updated_at": time.time(),
+        "deleted": False,
+        "members": [],
+    }
+}
+
 # Thread lock for shared state mutations
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "db", "users.json")
 
@@ -100,6 +123,17 @@ USERS = load_users()
 # ---------------------------------------------------------------------------
 
 
+def parse_cookies(headers):
+    cookies = {}
+    cookie_str = headers.get("cookie", "")
+    if cookie_str:
+        for pair in cookie_str.split(";"):
+            pair = pair.strip()
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                cookies[k.strip()] = v.strip()
+    return cookies
+
 def generate_session_token():
     """Generate a cryptographically random session token.
 
@@ -111,31 +145,38 @@ def generate_session_token():
     return uuid.uuid4().hex
 
 
-def validate_session(req):
-
-    token = get_session_token(req)
-    return sessions.get(token, None)
-
-
-def get_session_token(req):
-    return req.cookies.get("sessionid", "")
+def validate_session(headers):
+    token = get_session_token(headers)
+    with _lock:
+        return sessions.get(token, None)
 
 
-def validate_basic_auth(req):
+def get_session_token(headers):
+    return parse_cookies(headers).get("sessionid", "")
 
-    if req.auth:
-        username, password = req.auth
-        if USERS.get(username) == password:
-            return username
+
+def validate_basic_auth(headers):
+
+    auth_header = headers.get("authorization", "")
+    if auth_header.lower().startswith("basic "):
+        try:
+            import base64
+            encoded = auth_header[6:]
+            decoded = base64.b64decode(encoded).decode("utf-8")
+            username, password = decoded.split(":", 1)
+            if USERS.get(username) == password:
+                return username
+        except Exception:
+            pass
     return None
 
 
-def require_auth(req):
+def require_auth(headers):
 
-    user = validate_session(req)
+    user = validate_session(headers)
     if user:
         return user
-    return validate_basic_auth(req)
+    return validate_basic_auth(headers)
 
 
 def unauthorized_result():
@@ -148,54 +189,334 @@ def unauthorized_result():
     ).encode("utf-8")
 
 
-def remove_user_presence(username):
+def find_peer(username):
+    """Return the mutable peer registry entry for a username.
+
+    The peer registry is shared by tracker and peer-role processes. Tracker
+    uses it as the global directory with presence state, while peer backends
+    use it as their local routing cache for direct sends and retry delivery.
+
+    :param username: Peer username to find.
+    :returns: The peer dictionary stored in ``peer_list`` or ``None``.
+    """
+    with _lock:
+        for peer in peer_list:
+            if peer.get("username") == username:
+                return peer
+    return None
+
+
+def upsert_peer(username, peer_ip, peer_port, online=True):
+    """Insert or update a peer presence record.
+
+    Registration should not create duplicate users. This helper keeps one
+    record per username, updates the latest reachable IP/port, records online
+    state, refreshes ``last_seen``, and tracks the current online session start
+    time.
+
+    :param username: Authenticated username being registered.
+    :param peer_ip: Reachable LAN IP for the user's peer backend.
+    :param peer_port: Reachable port for the user's peer backend.
+    :param online: Whether the peer should be marked online.
+    :returns: ``(peer_copy, was_online)`` for response and broadcast decisions.
+    """
+    with _lock:
+        now = time.time()
+        peer = find_peer(username)
+        was_online = bool(peer and peer.get("online"))
+
+        if peer is None:
+            peer = {
+                "username": username,
+                "ip": peer_ip,
+                "port": peer_port,
+                "online": bool(online),
+                "last_seen": now,
+                "online_since": now if online else 0,
+            }
+            peer_list.append(peer)
+        else:
+            peer["ip"] = peer_ip or peer.get("ip", "")
+            peer["port"] = peer_port or peer.get("port", "")
+            if online and not was_online:
+                peer["online_since"] = now
+            peer["online"] = bool(online)
+            peer["last_seen"] = now
+
+        return dict(peer), was_online
+
+
+def mark_user_offline(username):
+    """Mark a user offline without deleting their peer profile.
+
+    Logout should keep the user visible in the Peers list so other users can
+    still select them and queue direct messages. Channel membership is
+    removed because channels represent currently joined online participants.
+
+    :param username: User leaving the application.
+    :returns: Count of presence/channel records changed.
+    """
     if not username:
         return 0
 
-    removed = 0
-    before_count = len(peer_list)
-    peer_list[:] = [p for p in peer_list if p.get("username") != username]
-    removed += before_count - len(peer_list)
+    changed = 0
+    with _lock:
+        peer = find_peer(username)
+        if peer and peer.get("online"):
+            peer["online"] = False
+            peer["last_seen"] = time.time()
+            changed += 1
 
-    for channel_name in list(channels.keys()):
-        before_members = len(channels[channel_name])
-        channels[channel_name] = [
-            p for p in channels[channel_name] if p.get("username") != username
+        for channel_name in list(channels.keys()):
+            before_members = len(channels[channel_name])
+            channels[channel_name] = [
+                p for p in channels[channel_name] if p.get("username") != username
+            ]
+            changed += before_members - len(channels[channel_name])
+            if channel_name != "general" and not channels[channel_name]:
+                del channels[channel_name]
+            if channel_name in channel_catalog:
+                channel_catalog[channel_name]["members"] = list(
+                    channels.get(channel_name, [])
+                )
+
+    return changed
+
+
+def parse_peer_response(response):
+    """Parse a raw HTTP response from another peer backend.
+
+    Peer-to-peer delivery uses ``send_to_peer`` with manually built HTTP
+    payloads. This helper extracts the numeric HTTP status and JSON body so the
+    caller can decide whether a delivery, backup-store, or ACK succeeded.
+
+    :param response: Raw HTTP response bytes from ``send_to_peer``.
+    :returns: ``(status_code, json_body)`` or ``(0, {})`` on parse failure.
+    """
+    if not response:
+        return 0, {}
+
+    try:
+        text = response.decode("utf-8", errors="replace")
+        status_line = text.split("\r\n", 1)[0]
+        parts = status_line.split()
+        status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+        _, body = text.split("\r\n\r\n", 1)
+        data = json.loads(body) if body else {}
+        return status, data
+    except Exception:
+        return 0, {}
+
+
+def build_json_post(path, host, port, payload):
+    """Build a raw HTTP POST request containing a JSON payload.
+
+    The project intentionally avoids third-party HTTP clients for backend
+    communication. Peer backends therefore exchange raw TCP bytes, and this
+    function centralizes the HTTP framing used by direct delivery, backup
+    storage, and presence-event notifications.
+
+    :param path: Request path on the remote peer backend.
+    :param host: Host header value and target host.
+    :param port: Host header port and target port.
+    :param payload: JSON-serializable request body.
+    :returns: UTF-8 encoded raw HTTP request bytes.
+    """
+    body = json.dumps(payload)
+    return (
+        (
+            "POST {} HTTP/1.1\r\n"
+            "Host: {}:{}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "{}"
+        )
+        .format(path, host, port, len(body), body)
+        .encode("utf-8")
+    )
+
+
+async def deliver_direct_message(peer, message):
+    """Attempt one direct peer-to-peer delivery.
+
+    This is the core live-chat path. It sends a direct message from this local
+    peer backend to the recipient's ``/receive-message`` endpoint. The message
+    is sent as plaintext JSON.
+
+    :param peer: Target peer record with ``ip`` and ``port``.
+    :param message: Message record containing id/from/to/msg metadata.
+    :returns: ``True`` only when the remote peer returns a successful JSON ACK.
+    """
+    payload = {
+        "id": message["id"],
+        "from": message["from"],
+        "to": message["to"],
+        "msg": message["msg"],
+        "type": "direct",
+        "created_at": message.get("created_at", message.get("ts", time.time())),
+    }
+    response = await send_to_peer(
+        peer["ip"],
+        peer["port"],
+        build_json_post("/receive-message", peer["ip"], peer["port"], payload),
+    )
+    status, data = parse_peer_response(response)
+    return bool(response and status < 400 and data.get("status") == "ok")
+
+
+def choose_backup_peer(sender, recipient):
+    """Choose one online peer to hold a backup direct message.
+
+    Backup peers are best-effort relays. They should not be the sender or final
+    recipient, and they must have a reachable IP/port. The first eligible peer
+    is enough for this assignment feature; the design intentionally avoids
+    complex replica selection or multi-hop routing.
+
+    :param sender: Username that created the queued message.
+    :param recipient: Final target username.
+    :returns: A copy of the chosen peer record or ``None``.
+    """
+    with _lock:
+        for peer in peer_list:
+            if (
+                peer.get("online")
+                and peer.get("ip")
+                and peer.get("port")
+                and peer.get("username") not in (sender, recipient)
+            ):
+                return dict(peer)
+    return None
+
+
+async def broadcast_peer_online_event(peer_entry, exclude_username=None):
+    """Notify currently online peers that a user has come online.
+
+    This is the tracker-side trigger for retry-on-presence. When a user's
+    registration transitions from offline to online, the tracker sends a
+    ``peer-online`` event to all other online peers. Those peers then retry only
+    messages addressed to that username instead of wasting resources polling.
+
+    :param peer_entry: Newly online peer record.
+    :param exclude_username: Username to skip, normally the user who just joined.
+    """
+    event = {
+        "type": "peer-online",
+        "username": peer_entry.get("username"),
+        "ip": peer_entry.get("ip"),
+        "port": peer_entry.get("port"),
+        "last_seen": peer_entry.get("last_seen", time.time()),
+    }
+    with _lock:
+        targets = [
+            dict(peer)
+            for peer in peer_list
+            if peer.get("online")
+            and peer.get("username") != exclude_username
+            and peer.get("ip")
+            and peer.get("port")
         ]
-        removed += before_members - len(channels[channel_name])
-        if channel_name != "general" and not channels[channel_name]:
-            del channels[channel_name]
 
-    return removed
+    async def _send_all():
+        async def _send(peer):
+            try:
+                reader, writer = await asyncio.open_connection(peer["ip"], int(peer["port"]))
+                raw_request = build_json_post("/presence-event", peer["ip"], peer["port"], event)
+                writer.write(raw_request)
+                await writer.drain()
+                resp = await reader.read()
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+        
+        tasks = [_send(p) for p in targets]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    if targets:
+        await _send_all()
+
+
+async def retry_outbox_for(username, peer):
+    """Retry local sender-outbox messages for a newly online user.
+
+    The sender-side queue stores direct messages that could not be delivered
+    immediately. Presence events call this function with the recipient's latest
+    IP/port. Successfully ACKed messages are removed from the outbox and the
+    local message log is updated to ``delivery_status=delivered``.
+
+    :param username: Recipient username that just came online.
+    :param peer: Latest peer record for that recipient.
+    :returns: Number of outbox messages delivered.
+    """
+    delivered = 0
+    with _lock:
+        candidates = [m for m in outbox_messages if m.get("to") == username]
+
+    for message in candidates:
+        message["attempt_count"] = message.get("attempt_count", 0) + 1
+        if await deliver_direct_message(peer, message):
+            with _lock:
+                outbox_messages[:] = [
+                    m for m in outbox_messages if m.get("id") != message.get("id")
+                ]
+                for local_msg in messages:
+                    if local_msg.get("id") == message.get("id"):
+                        local_msg["delivery_status"] = "delivered"
+            delivered += 1
+
+    return delivered
+
+
+async def retry_held_for(username, peer):
+    """Retry backup-held messages for a newly online recipient.
+
+    A backup peer keeps messages on behalf of another sender.
+    When the recipient comes online, the backup peer attempts delivery directly
+    to the recipient and deletes each held copy only after a successful ACK.
+    Expired backup entries are also removed during this pass.
+
+    :param username: Recipient username that just came online.
+    :param peer: Latest peer record for that recipient.
+    :returns: Number of held backup messages delivered.
+    """
+    delivered = 0
+    now = time.time()
+    with _lock:
+        candidates = [
+            m
+            for m in held_messages
+            if m.get("to") == username and m.get("expires_at", 0) > now
+        ]
+
+    for message in candidates:
+        message["attempt_count"] = message.get("attempt_count", 0) + 1
+        if await deliver_direct_message(peer, message):
+            with _lock:
+                held_messages[:] = [
+                    m for m in held_messages if m.get("id") != message.get("id")
+                ]
+            delivered += 1
+
+    with _lock:
+        held_messages[:] = [m for m in held_messages if m.get("expires_at", 0) > now]
+
+    return delivered
 
 
 # P2P message helper
 
 
-def send_to_peer(peer_ip, peer_port, payload_bytes):
-    """Send a raw payload to a remote peer over TCP.
-
-    Opens a short-lived TCP connection to (peer_ip, peer_port), sends the
-    payload, and reads back the response. Used by /send-peer and
-    /broadcast-peer to implement the direct peer-to-peer chat phase.
-
-    :param peer_ip (str): Target peer IP address.
-    :param peer_port (int): Target peer port number.
-    :param payload_bytes (bytes): Raw bytes to send (typically a raw HTTP POST).
-    :returns (bytes | None): Response bytes, or None on error.
-    """
+async def send_to_peer(peer_ip, peer_port, payload_bytes):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(3)
-        s.connect((peer_ip, int(peer_port)))
-        s.sendall(payload_bytes)
-        response = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-        s.close()
+        reader, writer = await asyncio.open_connection(peer_ip, int(peer_port))
+        writer.write(payload_bytes)
+        await writer.drain()
+        response = await reader.read()
+        writer.close()
+        await writer.wait_closed()
         return response
     except Exception as e:
         print("[SampleApp] send_to_peer error: {}".format(e))
@@ -222,50 +543,169 @@ def normalize_channel_name(name):
     return name
 
 
-def announce_channel_event(
+def ensure_channel_record(channel_name):
+    """Ensure a channel has both member-list and metadata records.
+
+    Channel state is split on purpose:
+    - ``channels`` tracks local peer membership and is used for live P2P fanout.
+    - ``channel_catalog`` tracks metadata that the tracker can publish to peers.
+
+    This helper is called before mutating or reading channel metadata so older
+    code paths that only created ``channels[name]`` still get a matching
+    metadata record.
+    """
+    channel_name = normalize_channel_name(channel_name) or "general"
+    channels.setdefault(channel_name, [])
+    if channel_name not in channel_catalog:
+        channel_catalog[channel_name] = {
+            "name": channel_name,
+            "version": 1,
+            "updated_at": time.time(),
+            "deleted": False,
+            "members": list(channels.get(channel_name, [])),
+        }
+    return channel_catalog[channel_name]
+
+
+def touch_channel_record(channel_name, deleted=False, extra=None):
+    with _lock:
+        channel_name = normalize_channel_name(channel_name) or "general"
+        if deleted and channel_name not in channels:
+            record = channel_catalog.setdefault(
+                channel_name,
+                {
+                    "name": channel_name,
+                    "version": 0,
+                    "updated_at": time.time(),
+                    "deleted": False,
+                    "members": [],
+                },
+            )
+        else:
+            record = ensure_channel_record(channel_name)
+        record["version"] = int(record.get("version", 0)) + 1
+        record["updated_at"] = time.time()
+        record["deleted"] = bool(deleted)
+        record["members"] = list(channels.get(channel_name, []))
+        if extra:
+            record.update(extra)
+        return dict(record)
+
+
+def channel_metadata_snapshot(include_deleted=True):
+    with _lock:
+        ensure_channel_record("general")
+        snapshot = {}
+        for name, record in channel_catalog.items():
+            if record.get("deleted") and not include_deleted:
+                continue
+            copied = dict(record)
+            copied["members"] = list(copied.get("members", []))
+            snapshot[name] = copied
+        return snapshot
+
+
+def channel_messages_for(channel_name):
+    """Return sorted local history for one channel.
+
+    History remains peer-owned. The tracker only stores metadata, so peer
+    backends answer history-sync requests from their own ``messages`` list.
+    Sorting by ``(ts, id)`` makes cursor-based sync deterministic even when two
+    messages share the same timestamp.
+    """
+    return sorted(
+        [
+            m
+            for m in messages
+            if m.get("type") == "channel" and m.get("channel") == channel_name
+        ],
+        key=lambda m: (m.get("ts") or 0, m.get("id", "")),
+    )
+
+
+def latest_channel_state(channel_name):
+    """Summarize local history freshness for peer selection.
+
+    Returning users ask online peers for this lightweight summary before
+    downloading any history. The client chooses the peer with the newest
+    ``latest_ts`` and largest ``message_count``, then fetches only the missing
+    messages from that peer.
+    """
+    ch_messages = channel_messages_for(channel_name)
+    latest = ch_messages[-1] if ch_messages else {}
+    return {
+        "channel": channel_name,
+        "has_channel": channel_name in channels
+        and not channel_catalog.get(channel_name, {}).get("deleted", False),
+        "latest_ts": latest.get("ts", 0),
+        "latest_id": latest.get("id", ""),
+        "message_count": len(ch_messages),
+        "version": channel_catalog.get(channel_name, {}).get("version", 0),
+    }
+
+
+async def announce_channel_event(
     event_type, channel_name, username, member, peers, extra=None
 ):
     targets = [
         p
         for p in peers
         if p.get("username") != username and p.get("ip") and p.get("port")
+        and p.get("online", True) is not False
     ]
+    async def _send_all():
+        async def _send(peer):
+            try:
+                reader, writer = await asyncio.open_connection(peer["ip"], int(peer["port"]))
+                
+                payload = {
+                    "type": event_type,
+                    "channel": channel_name,
+                    "from": username,
+                    "creator": member,
+                }
+                if extra:
+                    payload.update(extra)
+                msg_payload = json.dumps(payload)
+                raw_request = (
+                    "POST /receive-channel HTTP/1.1\r\n"
+                    "Host: {}:{}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "{}"
+                ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
+                
+                writer.write(raw_request.encode())
+                await writer.drain()
+                
+                # Simple read to ensure ACK
+                resp = await reader.read(4096)
+                writer.close()
+                await writer.wait_closed()
+                
+                if resp:
+                    return peer["username"], True
+                return peer["username"], False
+            except Exception:
+                return peer["username"], False
+
+        tasks = [_send(p) for p in targets]
+        if tasks:
+            return await asyncio.gather(*tasks)
+        return []
+
     delivered = []
     failed = []
-
-    def _announce(peer):
-        payload = {
-            "type": event_type,
-            "channel": channel_name,
-            "from": username,
-            "creator": member,
-        }
-        if extra:
-            payload.update(extra)
-        msg_payload = json.dumps(payload)
-        raw_request = (
-            "POST /receive-channel HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
-        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
-        with _lock:
-            if resp:
-                delivered.append(peer.get("username"))
+    
+    if targets:
+        results = await _send_all()
+        for peer_username, success in results:
+            if success:
+                delivered.append(peer_username)
             else:
-                failed.append(peer.get("username"))
-
-    threads = [
-        threading.Thread(target=_announce, args=(p,), daemon=True) for p in targets
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=3)
+                failed.append(peer_username)
 
     return delivered, failed
 
@@ -278,14 +718,14 @@ app = AsynapRous()
 
 
 @app.route("/login", methods=["PUT", "POST"])
-def login(req):
+def login(headers, body):
     # Handle user login and issue a session cookie (Task 2.2).
 
-    print("[SampleApp] Logging in {} to {}".format(req.headers, req.body))
+    print("[SampleApp] Logging in {} to {}".format(headers, body))
 
     # Parse JSON body
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -319,8 +759,8 @@ def login(req):
 
 
 @app.route("/logout", methods=["POST", "DELETE"])
-def logout(req):
-    token = get_session_token(req)
+def logout(headers, body):
+    token = get_session_token(headers)
     username = None
 
     with _lock:
@@ -330,7 +770,7 @@ def logout(req):
         if not username:
             username = validate_basic_auth(req)
 
-        removed_presence = remove_user_presence(username)
+        removed_presence = mark_user_offline(username)
 
     result = {
         "status": "ok",
@@ -352,10 +792,10 @@ def logout(req):
 
 
 @app.route("/hello", methods=["POST", "PUT", "GET"])
-def hello(req):
+def hello(headers, body):
     # Access a protected route using session cookie or Basic Auth (Task 2.2).
 
-    user = require_auth(req)
+    user = require_auth(headers)
     if not user:
         print("[SampleApp] Unauthenticated access to /hello — returning 401")
         # Return 401 sentinel; HttpAdapter will send WWW-Authenticate header
@@ -388,7 +828,7 @@ def echo(req):
     """
     print("[SampleApp] received body {}".format(body))
     try:
-        message = json.loads(req.body)
+        message = json.loads(body)
         data = {"status": "ok", "received": message}
     except json.JSONDecodeError:
         data = {"status": "error", "error": "Invalid JSON"}
@@ -396,9 +836,9 @@ def echo(req):
 
 
 @app.route("/client-info", methods=["GET"])
-def client_info(req):
-    forwarded_for = req.headers.get("x-forwarded-for", "")
-    real_ip = req.headers.get("x-real-ip", "")
+def client_info(headers, body):
+    forwarded_for = headers.get("x-forwarded-for", "")
+    real_ip = headers.get("x-real-ip", "")
     client_ip = forwarded_for.split(",", 1)[0].strip() or real_ip.strip()
     result = {
         "status": "ok",
@@ -410,7 +850,7 @@ def client_info(req):
 @app.route("/local-info", methods=["POST", "GET"])
 def local_info(req):
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -428,18 +868,19 @@ def local_info(req):
 
 
 @app.route("/submit-info", methods=["POST"])
-def submit_info(req):
+async def submit_info(headers, body):
     # Register a peer's network information with the tracker (Task 2.3).
-    if not require_auth(req):
+    auth_user = require_auth(headers)
+    if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] submit_info req.body={}".format(body))
+    print("[SampleApp] submit_info body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
-    username = data.get("username", "unknown")
+    username = auth_user
     peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
 
@@ -447,13 +888,16 @@ def submit_info(req):
         result = {"status": "error", "message": "ip and port are required"}
         return json.dumps(result).encode("utf-8")
 
-    # Add peer to registry (avoid duplicates by username)
-    peer_entry = {"username": username, "ip": peer_ip, "port": peer_port}
     with _lock:
-        # Remove old entry for this username if present
-        global peer_list
-        peer_list = [p for p in peer_list if p.get("username") != username]
-        peer_list.append(peer_entry)
+        peer_entry, was_online = upsert_peer(
+            username,
+            peer_ip,
+            peer_port,
+            online=True,
+        )
+
+    if not was_online:
+        await broadcast_peer_online_event(peer_entry, exclude_username=username)
 
     print("[SampleApp] Registered peer: {}".format(peer_entry))
     result = {
@@ -465,29 +909,33 @@ def submit_info(req):
 
 
 @app.route("/get-list", methods=["GET"])
-def get_list(req):
+def get_list(headers, body):
     # Return the list of all registered peers (Task 2.3 — Initialization Phase).
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] get_list called, {} peers".format(len(peer_list)))
+    with _lock:
+        total_peers = len(peer_list)
+    print("[SampleApp] get_list called, {} peers".format(total_peers))
+    with _lock:
+        peers = [dict(peer) for peer in peer_list]
     result = {
         "status": "ok",
-        "peers": peer_list,
-        "count": len(peer_list),
+        "peers": peers,
+        "count": len(peers),
     }
     return json.dumps(result).encode("utf-8")
 
 
 @app.route("/add-list", methods=["POST"])
-def add_list(req):
+def add_list(headers, body):
     # Add a peer entry to the registry (Task 2.3).
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] add_list req.body={}".format(body))
+    print("[SampleApp] add_list body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -495,13 +943,23 @@ def add_list(req):
     peer_ip = data.get("ip", "")
     peer_port = data.get("port", "")
 
-    peer_entry = {"username": username, "ip": peer_ip, "port": peer_port}
+    peer_entry = {
+        "username": username,
+        "ip": peer_ip,
+        "port": peer_port,
+        "online": bool(data.get("online", True)),
+        "last_seen": data.get("last_seen", time.time()),
+        "online_since": data.get("online_since", 0),
+    }
     with _lock:
-        global peer_list
-        peer_list = [p for p in peer_list if p.get("username") != username]
-        peer_list.append(peer_entry)
+        current = find_peer(username)
+        if current:
+            current.update(peer_entry)
+        else:
+            peer_list.append(peer_entry)
+        total_peers = len(peer_list)
 
-    result = {"status": "ok", "added": peer_entry, "total": len(peer_list)}
+    result = {"status": "ok", "added": peer_entry, "total": total_peers}
     return json.dumps(result).encode("utf-8")
 
 
@@ -509,14 +967,14 @@ def add_list(req):
 
 
 @app.route("/connect-peer", methods=["POST"])
-def connect_peer(req):
+async def connect_peer(headers, body):
     # Connect to a remote peer and check if it is reachable (Task 2.3).
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] connect_peer req.body={}".format(body))
+    print("[SampleApp] connect_peer body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -532,7 +990,7 @@ def connect_peer(req):
         "\r\n"
     ).format(target_ip, target_port)
 
-    response = send_to_peer(target_ip, target_port, raw_request.encode())
+    response = await send_to_peer(target_ip, target_port, raw_request.encode())
 
     if response:
         # Extract JSON body from HTTP response
@@ -574,33 +1032,59 @@ def peer_info(req):
 
 
 @app.route("/send-peer", methods=["POST"])
-def send_peer(req):
-    # Send a direct message to a specific peer (Task 2.3 — Chat Phase).
-    if not require_auth(req):
+async def send_peer(headers, body):
+    """Send, queue, or back up one direct peer-to-peer message.
+
+    The browser sends plaintext direct messages to its own local peer backend.
+    This route first records the message locally so the sender can see it in
+    history, then attempts direct delivery to the recipient peer. If the
+    recipient is offline or unreachable, the message is stored in this peer's
+    in-memory sender outbox and one online backup peer is asked to hold the
+    message as a best-effort relay.
+
+    :param headers: HTTP request headers; must authenticate the sender.
+    :param body: JSON message payload with id, to, msg, and peer info.
+    :returns: JSON result describing delivered/queued state and backup holder.
+    """
+    auth_user = require_auth(headers)
+    if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] send_peer req.body={}".format(body))
+    print("[SampleApp] send_peer body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
     to_user = data.get("to", "")
     msg_text = data.get("msg", "")
-    sender = data.get("from", "anonymous")
+    sender = auth_user
+    message_id = data.get("id") or uuid.uuid4().hex
+    created_at = data.get("created_at") or time.time()
 
     # Find target peer in registry (or use explicit ip/port)
     target_ip = data.get("ip", "")
     target_port = data.get("port", "")
+    target_online = data.get("online", True)
+    target_peer = None
 
     if not target_ip or not target_port:
         # Look up peer by username
         with _lock:
             for p in peer_list:
                 if p.get("username") == to_user:
+                    target_peer = dict(p)
                     target_ip = p["ip"]
                     target_port = p["port"]
+                    target_online = p.get("online", True)
                     break
+    else:
+        target_peer = {
+            "username": to_user,
+            "ip": target_ip,
+            "port": target_port,
+            "online": bool(target_online),
+        }
 
     if not target_ip:
         result = {"status": "error", "message": "Peer '{}' not found".format(to_user)}
@@ -608,45 +1092,74 @@ def send_peer(req):
 
     # Record message locally so poller can show it immediately (no optimistic render needed)
     entry = {
+        "id": message_id,
         "from": sender,
         "to": to_user,
         "msg": msg_text,
         "type": "direct",
-        "ts": time.time(),
+        "created_at": created_at,
+        "ts": created_at,
+        "delivery_status": "sending" if target_online else "queued",
     }
     with _lock:
         messages.append(entry)
 
-    # browser gets a response immediately without waiting for Bob's server.
-    def _deliver_async(ip, port, s, m):
-        """Background worker: send message to peer TCP, do not block caller."""
-        msg_payload = json.dumps({"from": s, "msg": m})
-        raw_request = (
-            "POST /receive-message HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(ip, port, len(msg_payload), msg_payload)
-        send_to_peer(ip, port, raw_request.encode())
+    delivered = False
+    if target_online and target_peer:
+        delivered = await deliver_direct_message(target_peer, entry)
 
-    t = threading.Thread(
-        target=_deliver_async,
-        args=(target_ip, target_port, sender, msg_text),
-        daemon=True,
-    )
-    t.start()
+    backup_holder = None
+    if delivered:
+        entry["delivery_status"] = "delivered"
+    else:
+        entry["delivery_status"] = "queued"
+        outbox_entry = dict(entry)
+        outbox_entry.update(
+            {
+                "target_ip": target_ip,
+                "target_port": target_port,
+                "status": "queued",
+                "attempt_count": 0,
+            }
+        )
+
+        with _lock:
+            outbox_messages[:] = [
+                m for m in outbox_messages if m.get("id") != message_id
+            ]
+            outbox_messages.append(outbox_entry)
+
+        backup_peer = choose_backup_peer(sender, to_user)
+        if backup_peer:
+            backup_payload = dict(outbox_entry)
+            backup_payload["expires_at"] = time.time() + 3600
+            response = await send_to_peer(
+                backup_peer["ip"],
+                backup_peer["port"],
+                build_json_post(
+                    "/store-backup-message",
+                    backup_peer["ip"],
+                    backup_peer["port"],
+                    backup_payload,
+                ),
+            )
+            status, data = parse_peer_response(response)
+            if response and status < 400 and data.get("status") == "ok":
+                backup_holder = backup_peer.get("username")
+                outbox_entry["backup_holder"] = backup_holder
+                entry["backup_holder"] = backup_holder
 
     # Return immediately — browser shows the message via polling within 2 s
     result = {
         "status": "ok",
-        "message": "Message queued for {} at {}:{}".format(
-            to_user, target_ip, target_port
+        "message": "Message {} for {}".format(
+            "delivered" if delivered else "queued",
+            to_user,
         ),
-        "queued": True,
-        "delivered": False,
+        "id": message_id,
+        "queued": not delivered,
+        "delivered": delivered,
+        "backup_holder": backup_holder,
     }
     return json.dumps(result).encode("utf-8")
 
@@ -655,36 +1168,36 @@ def send_peer(req):
 
 
 @app.route("/broadcast-peer", methods=["POST"])
-def broadcast_peer(req):
+async def broadcast_peer(headers, body):
     """Broadcast a message to ALL known peers (Task 2.3 — Chat Phase).
 
-    Fan-out: iterates the peer_list and calls send_to_peer for each one.
-    Uses a thread per peer so the broadcast is non-blocking.
-
+    Fan-out: iterates the peer_list and sends to all peers concurrently
+    using non-blocking asyncio.gather.
+    
     Accepts JSON body: {"msg": "hello everyone", "from": "alice"}
 
     :param headers: HTTP headers.
     :param body: JSON body.
     :returns (bytes): JSON summary of delivery attempts.
     """
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] broadcast_peer req.body={}".format(body))
+    print("[SampleApp] broadcast_peer body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
     msg_text = data.get("msg", "")
     sender = data.get("from", "anonymous")
 
-    request_peers = data.get("peers")
-    if isinstance(request_peers, list):
-        source_peers = request_peers
-    else:
-        with _lock:
-            source_peers = list(peer_list)
+    with _lock:
+        request_peers = data.get("peers")
+        if isinstance(request_peers, list):
+            source_peers = [dict(p) for p in request_peers]
+        else:
+            source_peers = [dict(p) for p in peer_list]
 
     # Keep a local copy so the sender sees what they sent, but do not
     # network-deliver it back to the sender.
@@ -704,38 +1217,53 @@ def broadcast_peer(req):
         p
         for p in source_peers
         if p.get("username") != sender and p.get("ip") and p.get("port")
+        and p.get("online", True) is not False
     ]
+
+    async def _send_all():
+        async def _send(peer):
+            try:
+                reader, writer = await asyncio.open_connection(peer["ip"], int(peer["port"]))
+                
+                msg_payload = json.dumps({"from": sender, "msg": msg_text})
+                raw_request = (
+                    "POST /receive-message HTTP/1.1\r\n"
+                    "Host: {}:{}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "{}"
+                ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
+                
+                writer.write(raw_request.encode())
+                await writer.drain()
+                
+                resp = await reader.read(4096)
+                writer.close()
+                await writer.wait_closed()
+                
+                if resp:
+                    return peer["username"], True
+                return peer["username"], False
+            except Exception:
+                return peer["username"], False
+
+        tasks = [_send(p) for p in targets]
+        if tasks:
+            return await asyncio.gather(*tasks)
+        return []
 
     delivered = []
     failed = []
-
-    def _send(peer):
-        """Inner worker to send to one peer in its own thread."""
-        msg_payload = json.dumps({"from": sender, "msg": msg_text})
-        raw_request = (
-            "POST /receive-message HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
-
-        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
-        with _lock:
-            if resp:
-                delivered.append(peer["username"])
+    
+    if targets:
+        results = await _send_all()
+        for peer_username, success in results:
+            if success:
+                delivered.append(peer_username)
             else:
-                failed.append(peer["username"])
-
-    threads = []
-    for peer in targets:
-        t = threading.Thread(target=_send, args=(peer,))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join(timeout=5)
+                failed.append(peer_username)
 
     result = {
         "status": "ok",
@@ -751,16 +1279,19 @@ def broadcast_peer(req):
 
 
 @app.route("/get-messages", methods=["GET"])
-def get_messages(req):
+def get_messages(headers, body):
 
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
     print("[SampleApp] get_messages called")
     with _lock:
         msg_snapshot = [
-            m for m in messages if m.get("type") != "channel" and not m.get("channel")
+            dict(m) for m in messages if m.get("type") != "channel" and not m.get("channel")
         ]
+    msg_snapshot.sort(
+        key=lambda m: (m.get("created_at") or m.get("ts") or 0, m.get("id", ""))
+    )
     result = {
         "status": "ok",
         "messages": msg_snapshot,
@@ -773,32 +1304,48 @@ def get_messages(req):
 
 
 @app.route("/get-channels", methods=["GET"])
-def get_channels(req):
-    # Return all available channels and their member lists (Task 2.3).
+def get_channels(headers, body):
+    """Return tracker channel metadata used by browser reconciliation.
+
+    ``channels`` contains only active, visible channels for compatibility with
+    older frontend callers. ``metadata`` also includes deleted/renamed channel
+    tombstones so offline clients can correct stale local state after login.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] get_channels called")
     with _lock:
-        channels.setdefault("general", [])
-        ch_snapshot = {ch: list(members) for ch, members in channels.items()}
+        metadata = {name: dict(record) for name, record in channel_metadata_snapshot(include_deleted=True).items()}
+        active_metadata = {
+            name: record for name, record in metadata.items() if not record.get("deleted")
+        }
     result = {
         "status": "ok",
-        "channels": ch_snapshot,
-        "names": sorted(ch_snapshot.keys()),
-        "count": len(ch_snapshot),
+        "channels": active_metadata,
+        "metadata": metadata,
+        "names": sorted(active_metadata.keys()),
+        "count": len(active_metadata),
     }
     return json.dumps(result).encode("utf-8")
 
 
 @app.route("/create-channel", methods=["POST"])
-def create_channel(req):
-    # Register a channel and optionally announce it to known peers.
-    auth_user = require_auth(req)
+async def create_channel(headers, body):
+    """Create or re-activate a channel and optionally announce it to peers.
+
+    The local peer uses this route to update its own backend and send a P2P
+    channel-created event. The browser then calls the tracker with
+    ``announce=False`` so the tracker becomes the metadata source of truth
+    without routing live messages.
+    """
+    auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] create_channel req.body={}".format(body))
+    print("[SampleApp] create_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -816,10 +1363,15 @@ def create_channel(req):
 
     request_peers = data.get("peers")
     with _lock:
+        # Keep exactly one membership entry per username. This avoids duplicate
+        # fanout targets when a user registers again with a new LAN IP/port.
         members = channels.setdefault(channel_name, [])
         if username:
             members[:] = [m for m in members if m.get("username") != username]
             members.append(member)
+        # Bump metadata after membership changes so the tracker/client can see
+        # that this channel changed while someone may have been offline.
+        metadata = touch_channel_record(channel_name, deleted=False)
         source_peers = (
             request_peers if isinstance(request_peers, list) else list(peer_list)
         )
@@ -827,7 +1379,7 @@ def create_channel(req):
     delivered = []
     failed = []
     if data.get("announce", True) is not False:
-        delivered, failed = announce_channel_event(
+        delivered, failed = await announce_channel_event(
             "channel-created",
             channel_name,
             username,
@@ -838,6 +1390,7 @@ def create_channel(req):
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "message": "Channel #{} is available".format(channel_name),
         "delivered": delivered,
         "failed": failed,
@@ -846,14 +1399,20 @@ def create_channel(req):
 
 
 @app.route("/rename-channel", methods=["POST"])
-def rename_channel(req):
-    auth_user = require_auth(req)
+async def rename_channel(headers, body):
+    """Rename a channel while preserving history and offline reconciliation.
+
+    The old channel is not simply forgotten. It becomes a deleted metadata
+    tombstone with ``renamed_to`` so offline users can map their old IndexedDB
+    history to the new channel name when they come back.
+    """
+    auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] rename_channel req.body={}".format(body))
+    print("[SampleApp] rename_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -873,6 +1432,15 @@ def rename_channel(req):
 
     with _lock:
         old_members = channels.pop(old_name, [])
+        # Store a tombstone for the old name before creating the new name. This
+        # is what lets clients distinguish "deleted" from "renamed".
+        touch_channel_record(
+            old_name,
+            deleted=True,
+            extra={"renamed_to": new_name, "members": list(old_members)},
+        )
+        # Merge old members into the new channel, preserving any existing
+        # members and avoiding duplicates by username.
         merged_members = channels.setdefault(new_name, [])
         seen_users = {m.get("username") for m in merged_members}
         for old_member in old_members:
@@ -885,11 +1453,19 @@ def rename_channel(req):
             ]
             merged_members.append(member)
 
+        # Local peer history is peer-owned, so rename any messages this backend
+        # already has. Browser IndexedDB is renamed separately in index.js.
         for msg in messages:
             if msg.get("type") == "channel" and msg.get("channel") == old_name:
                 msg["channel"] = new_name
                 if msg.get("to") == old_name:
                     msg["to"] = new_name
+
+        metadata = touch_channel_record(
+            new_name,
+            deleted=False,
+            extra={"previous_name": old_name},
+        )
 
         source_peers = (
             request_peers if isinstance(request_peers, list) else list(peer_list)
@@ -898,7 +1474,7 @@ def rename_channel(req):
     delivered = []
     failed = []
     if data.get("announce", True) is not False:
-        delivered, failed = announce_channel_event(
+        delivered, failed = await announce_channel_event(
             "channel-renamed",
             old_name,
             username,
@@ -911,6 +1487,7 @@ def rename_channel(req):
         "status": "ok",
         "old_channel": old_name,
         "channel": new_name,
+        "metadata": metadata,
         "delivered": delivered,
         "failed": failed,
     }
@@ -918,14 +1495,20 @@ def rename_channel(req):
 
 
 @app.route("/delete-channel", methods=["DELETE", "POST"])
-def delete_channel(req):
-    auth_user = require_auth(req)
+async def delete_channel(headers, body):
+    """Delete a channel locally and publish a metadata tombstone.
+
+    Deleting removes active membership and local channel messages, but the
+    metadata record remains with ``deleted=True``. That tombstone is required so
+    users who were offline during deletion can hide the channel on next sync.
+    """
+    auth_user = require_auth(headers)
     if not auth_user:
         return unauthorized_result()
 
-    print("[SampleApp] delete_channel req.body={}".format(body))
+    print("[SampleApp] delete_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -943,7 +1526,13 @@ def delete_channel(req):
     request_peers = data.get("peers")
 
     with _lock:
+        old_members = list(channels.get(channel_name, []))
         channels.pop(channel_name, None)
+        metadata = touch_channel_record(
+            channel_name,
+            deleted=True,
+            extra={"members": old_members},
+        )
         messages[:] = [
             m
             for m in messages
@@ -956,7 +1545,7 @@ def delete_channel(req):
     delivered = []
     failed = []
     if data.get("announce", True) is not False:
-        delivered, failed = announce_channel_event(
+        delivered, failed = await announce_channel_event(
             "channel-deleted",
             channel_name,
             username,
@@ -967,6 +1556,7 @@ def delete_channel(req):
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "delivered": delivered,
         "failed": failed,
     }
@@ -974,11 +1564,16 @@ def delete_channel(req):
 
 
 @app.route("/receive-channel", methods=["POST"])
-def receive_channel(req):
-    # Receive a P2P channel-created event from another peer.
-    print("[SampleApp] receive_channel req.body={}".format(body))
+def receive_channel(headers, body):
+    """Apply a P2P channel metadata event from another peer.
+
+    This route keeps peer backends roughly in sync for live operation. The
+    tracker catalog still remains the authoritative repair source when a peer
+    missed events while offline.
+    """
+    print("[SampleApp] receive_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -995,6 +1590,11 @@ def receive_channel(req):
             return json.dumps(result).encode("utf-8")
         with _lock:
             old_members = channels.pop(channel_name, [])
+            touch_channel_record(
+                channel_name,
+                deleted=True,
+                extra={"renamed_to": new_name, "members": list(old_members)},
+            )
             merged_members = channels.setdefault(new_name, [])
             seen_users = {m.get("username") for m in merged_members}
             for member in old_members:
@@ -1006,10 +1606,16 @@ def receive_channel(req):
                     msg["channel"] = new_name
                     if msg.get("to") == channel_name:
                         msg["to"] = new_name
+            metadata = touch_channel_record(
+                new_name,
+                deleted=False,
+                extra={"previous_name": channel_name},
+            )
         result = {
             "status": "ok",
             "old_channel": channel_name,
             "channel": new_name,
+            "metadata": metadata,
             "message": "Channel #{} renamed to #{}".format(channel_name, new_name),
         }
         return json.dumps(result).encode("utf-8")
@@ -1019,7 +1625,13 @@ def receive_channel(req):
             result = {"status": "error", "message": "Cannot delete this channel"}
             return json.dumps(result).encode("utf-8")
         with _lock:
+            old_members = list(channels.get(channel_name, []))
             channels.pop(channel_name, None)
+            metadata = touch_channel_record(
+                channel_name,
+                deleted=True,
+                extra={"members": old_members},
+            )
             messages[:] = [
                 m
                 for m in messages
@@ -1028,6 +1640,7 @@ def receive_channel(req):
         result = {
             "status": "ok",
             "channel": channel_name,
+            "metadata": metadata,
             "message": "Channel #{} deleted".format(channel_name),
         }
         return json.dumps(result).encode("utf-8")
@@ -1045,24 +1658,26 @@ def receive_channel(req):
         if username:
             members[:] = [m for m in members if m.get("username") != username]
             members.append(member)
+        metadata = touch_channel_record(channel_name, deleted=False)
 
     result = {
         "status": "ok",
         "channel": channel_name,
+        "metadata": metadata,
         "message": "Channel #{} received".format(channel_name),
     }
     return json.dumps(result).encode("utf-8")
 
 
 @app.route("/get-channel-messages", methods=["POST"])
-def get_channel_messages(req):
+def get_channel_messages(headers, body):
     # Return messages belonging to a specific channel (Task 2.3).
-    if not require_auth(req):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] get_channel_messages req.body={}".format(body))
+    print("[SampleApp] get_channel_messages body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -1072,10 +1687,83 @@ def get_channel_messages(req):
     # A direct message can have "to" equal to a channel name, so do not
     # use the destination field alone here.
     with _lock:
+        ch_messages = channel_messages_for(channel_name)
+
+    result = {
+        "status": "ok",
+        "channel": channel_name,
+        "messages": ch_messages,
+        "count": len(ch_messages),
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/channel-sync-state", methods=["POST"])
+async def channel_sync_state(headers, body):
+    """Return local channel history freshness for reconciliation.
+
+    A returning peer calls this on online peers before downloading history. The
+    response is intentionally small: for each requested channel it reports
+    whether this peer has the channel, the latest message cursor, and total
+    message count. The browser uses that to choose the best history source.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
+
+    print("[SampleApp] channel_sync_state body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    requested = data.get("channels")
+    with _lock:
+        if isinstance(requested, list) and requested:
+            names = [normalize_channel_name(name) for name in requested]
+        else:
+            names = list(channel_catalog.keys())
+        states = {
+            name: latest_channel_state(name)
+            for name in names
+            if name and not channel_catalog.get(name, {}).get("deleted", False)
+        }
+
+    result = {"status": "ok", "channels": states}
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/channel-history", methods=["POST"])
+async def channel_history(headers, body):
+    """Return channel messages newer than the caller's local sync cursor.
+
+    The cursor is ``(after_ts, after_id)`` instead of timestamp alone. This
+    avoids losing messages when two messages have the same timestamp and gives
+    the browser a stable ordering for deduplication.
+    """
+    if not require_auth(headers):
+        return unauthorized_result()
+
+    print("[SampleApp] channel_history body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    channel_name = normalize_channel_name(data.get("channel", ""))
+    try:
+        after_ts = float(data.get("after_ts", 0) or 0)
+    except (TypeError, ValueError):
+        after_ts = 0
+    after_id = data.get("after_id", "") or ""
+    if not channel_name:
+        result = {"status": "error", "message": "channel is required"}
+        return json.dumps(result).encode("utf-8")
+
+    with _lock:
         ch_messages = [
             m
-            for m in messages
-            if m.get("type") == "channel" and m.get("channel") == channel_name
+            for m in channel_messages_for(channel_name)
+            if (m.get("ts") or 0, m.get("id", "")) > (after_ts, after_id)
         ]
 
     result = {
@@ -1088,14 +1776,19 @@ def get_channel_messages(req):
 
 
 @app.route("/broadcast-channel", methods=["POST"])
-def broadcast_channel(req):
-    # Broadcast a message to all peers in a specific channel (Task 2.3).
-    if not require_auth(req):
+async def broadcast_channel(headers, body):
+    """Broadcast a channel message directly to peer backends.
+
+    Live channel messages remain P2P. This route stores the sender's local copy,
+    bumps channel metadata for freshness, then sends the message only to online
+    peer backends. The tracker is not used to route message content.
+    """
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] broadcast_channel req.body={}".format(body))
+    print("[SampleApp] broadcast_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -1112,50 +1805,73 @@ def broadcast_channel(req):
         "msg": msg_text,
         "type": "channel",
         "channel": channel_name,
-        "ts": time.time(),
+        "ts": int(time.time() * 1000),
     }
     with _lock:
-        channels.setdefault(channel_name, [])
+        ensure_channel_record(channel_name)
         messages.append(entry)
-        targets = [p for p in peer_list if p.get("username") != sender]
+        touch_channel_record(channel_name, deleted=False)
+        targets = [
+            dict(p)
+            for p in peer_list
+            if p.get("username") != sender
+            and p.get("online", True) is not False
+            and p.get("ip")
+            and p.get("port")
+        ]
+
+    async def _send_all():
+        async def _send(peer):
+            try:
+                reader, writer = await asyncio.open_connection(peer["ip"], int(peer["port"]))
+                
+                msg_payload = json.dumps(
+                    {
+                        "id": entry["id"],
+                        "from": sender,
+                        "channel": channel_name,
+                        "msg": msg_text,
+                        "type": "channel",
+                    }
+                )
+                raw_request = (
+                    "POST /receive-message HTTP/1.1\r\n"
+                    "Host: {}:{}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "{}"
+                ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
+                
+                writer.write(raw_request.encode())
+                await writer.drain()
+                
+                resp = await reader.read(4096)
+                writer.close()
+                await writer.wait_closed()
+                
+                if resp:
+                    return peer["username"], True
+                return peer["username"], False
+            except Exception:
+                return peer["username"], False
+
+        tasks = [_send(p) for p in targets]
+        if tasks:
+            return await asyncio.gather(*tasks)
+        return []
 
     delivered = []
     failed = []
-
-    def _send_channel(peer):
-        """Background worker: deliver channel message to one peer."""
-        msg_payload = json.dumps(
-            {
-                "id": entry["id"],
-                "from": sender,
-                "channel": channel_name,
-                "msg": msg_text,
-                "type": "channel",
-            }
-        )
-        raw_request = (
-            "POST /receive-message HTTP/1.1\r\n"
-            "Host: {}:{}\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "{}"
-        ).format(peer["ip"], peer["port"], len(msg_payload), msg_payload)
-        resp = send_to_peer(peer["ip"], peer["port"], raw_request.encode())
-        if resp:
-            delivered.append(peer.get("username"))
-        else:
-            failed.append(peer.get("username"))
-
-    # Fire all deliveries concurrently in daemon threads
-    threads = [
-        threading.Thread(target=_send_channel, args=(p,), daemon=True) for p in targets
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=3)
+    
+    if targets:
+        results = await _send_all()
+        for peer_username, success in results:
+            if success:
+                delivered.append(peer_username)
+            else:
+                failed.append(peer_username)
 
     result = {
         "status": "ok",
@@ -1167,13 +1883,13 @@ def broadcast_channel(req):
 
 
 @app.route("/leave-channel", methods=["DELETE"])
-def leave_channel(req):
-    if not require_auth(req):
+def leave_channel(headers, body):
+    if not require_auth(headers):
         return unauthorized_result()
 
-    print("[SampleApp] leave_channel req.body={}".format(body))
+    print("[SampleApp] leave_channel body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
@@ -1187,6 +1903,7 @@ def leave_channel(req):
             ]
             if not channels[channel_name]:
                 del channels[channel_name]
+            touch_channel_record(channel_name, deleted=channel_name not in channels)
 
     result = {
         "status": "ok",
@@ -1199,34 +1916,152 @@ def leave_channel(req):
 
 
 @app.route("/receive-message", methods=["POST"])
-def receive_message(req):
+def receive_message(headers, body):
+    """Receive a direct or channel message from another peer backend.
 
-    print("[SampleApp] receive_message req.body={}".format(body))
+    Direct messages are plaintext JSON. Message IDs are used for deduplication
+    because both a sender outbox and a backup peer can retry the same message
+    when the recipient comes online.
+
+    :param headers: HTTP request headers from the sending peer.
+    :param body: JSON message payload from direct, channel, or backup delivery.
+    :returns: JSON ACK; duplicate IDs return a successful duplicate ACK.
+    """
+
+    print("[SampleApp] receive_message body={}".format(body))
     try:
-        data = json.loads(req.body) if req.body else {}
+        data = json.loads(body) if body else {}
     except Exception:
         data = {}
 
     sender = data.get("from", "unknown")
     msg_text = data.get("msg", "")
     channel = normalize_channel_name(data.get("channel", "")) or None
+    message_id = data.get("id", uuid.uuid4().hex)
+    created_at = data.get("created_at") or time.time()
 
     entry = {
-        "id": data.get("id", uuid.uuid4().hex),
+        "id": message_id,
         "from": sender,
-        "to": channel if channel else "me",
+        "to": channel if channel else data.get("to", "me"),
         "msg": msg_text,
         "type": "channel" if channel else "direct",
         "channel": channel,
-        "ts": time.time(),
+        "created_at": created_at,
+        "delivery_status": "delivered",
+        "ts": created_at,
     }
     with _lock:
+        if any(m.get("id") == message_id for m in messages):
+            result = {"status": "ok", "ack": "duplicate", "duplicate": True}
+            return json.dumps(result).encode("utf-8")
         if channel:
             channels.setdefault(channel, [])
         messages.append(entry)
 
     print("[SampleApp] Received from {}: {}".format(sender, msg_text))
     result = {"status": "ok", "ack": "message received"}
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/presence-event", methods=["POST"])
+async def presence_event(headers, body):
+    """Handle a tracker broadcast that a peer has come online.
+
+    Peer backends receive this event from the tracker after another user
+    registers. The handler updates the local routing cache, then retries two
+    targeted queues for that username:
+
+    1. Sender outbox messages created by this peer.
+    2. Backup-held messages stored for other senders.
+
+    :param headers: HTTP request headers from the peer/tracker POST.
+    :param body: JSON event payload with username, ip, and port.
+    :returns: JSON result with retry counts for outbox and held messages.
+    """
+    print("[SampleApp] presence_event body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    if data.get("type") != "peer-online":
+        result = {"status": "error", "message": "Unsupported presence event"}
+        return json.dumps(result).encode("utf-8")
+
+    username = data.get("username", "")
+    peer = {
+        "username": username,
+        "ip": data.get("ip", ""),
+        "port": data.get("port", ""),
+        "online": True,
+        "last_seen": data.get("last_seen", time.time()),
+    }
+
+    with _lock:
+        current = find_peer(username)
+        if current:
+            current.update(peer)
+        elif username:
+            peer_list.append(peer)
+
+    delivered_outbox = await retry_outbox_for(username, peer)
+    delivered_held = await retry_held_for(username, peer)
+    result = {
+        "status": "ok",
+        "event": "peer-online",
+        "username": username,
+        "delivered_outbox": delivered_outbox,
+        "delivered_held": delivered_held,
+    }
+    return json.dumps(result).encode("utf-8")
+
+
+@app.route("/store-backup-message", methods=["POST"])
+async def store_backup_message(headers, body):
+    """Store one direct message as a best-effort backup.
+
+    Senders call this route on one online backup peer when direct delivery to
+    the final recipient fails. The backup peer stores the message plus delivery
+    metadata and waits for a future ``peer-online`` presence event for the
+    recipient.
+
+    :param headers: HTTP request headers from the sender peer backend.
+    :param body: JSON message envelope and metadata.
+    :returns: JSON ACK containing the stored message id.
+    """
+    print("[SampleApp] store_backup_message body={}".format(body))
+    try:
+        data = json.loads(body) if body else {}
+    except Exception:
+        data = {}
+
+    message_id = data.get("id") or uuid.uuid4().hex
+    if not data.get("to") or not data.get("msg"):
+        result = {"status": "error", "message": "to and msg are required"}
+        return json.dumps(result).encode("utf-8")
+
+    held_entry = {
+        "id": message_id,
+        "from": data.get("from", ""),
+        "to": data.get("to", ""),
+        "msg": data.get("msg", ""),
+        "type": "direct",
+        "created_at": data.get("created_at") or time.time(),
+        "ts": data.get("created_at") or time.time(),
+        "attempt_count": data.get("attempt_count", 0),
+        "expires_at": data.get("expires_at") or (time.time() + 3600),
+    }
+
+    with _lock:
+        held_messages[:] = [m for m in held_messages if m.get("id") != message_id]
+        held_messages.append(held_entry)
+
+    result = {
+        "status": "ok",
+        "message": "Backup message stored",
+        "id": message_id,
+    }
     return json.dumps(result).encode("utf-8")
 
 
@@ -1264,9 +2099,13 @@ PEER_ROUTE_PATHS = {
     "/delete-channel",
     "/receive-channel",
     "/get-channel-messages",
+    "/channel-sync-state",
+    "/channel-history",
     "/broadcast-channel",
     "/leave-channel",
     "/receive-message",
+    "/presence-event",
+    "/store-backup-message",
 }
 
 

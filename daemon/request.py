@@ -99,11 +99,14 @@ class Request():
         try:
             lines = request.splitlines()
             first_line = lines[0]
-            method, path, version = first_line.split()
+            method, raw_path, version = first_line.split()
 
-            # Default bare "/" to index page for static-file serving
-            if path == '/':
-                path = '/index.html'
+            # Strip query string from path for routing and file serving
+            if '?' in raw_path:
+                path = raw_path.split('?', 1)[0]
+            else:
+                path = raw_path
+
         except Exception:
             return None, None, None
 
@@ -123,14 +126,13 @@ class Request():
         headers = CaseInsensitiveDict()
         # Skip line 0 (the request line) and parse "Key: Value" pairs
         for line in lines[1:]:
-            if ': ' in line:
-                key, val = line.split(': ', 1)
-                headers[key] = val
+            if ':' in line:
+                key, val = line.split(':', 1)
+                headers[key.strip()] = val.strip()
         return headers
 
     def prepare_cookies(self, raw_cookie_string):
 
-        # TODO: cookie parsing implemented here
         cookies = {}
         if raw_cookie_string:
             for pair in raw_cookie_string.split(';'):
@@ -142,8 +144,6 @@ class Request():
 
     def prepare_auth(self, auth_header, url=""):
 
-        # TODO: prepare the request authentication
-        # self.auth = ...
         self.auth = None
         if auth_header and auth_header.lower().startswith("basic "):
             try:
@@ -164,16 +164,12 @@ class Request():
         """
         self.body = data
         self.prepare_content_length(data)
-        # TODO: prepare the request authentication
-        # self.auth = ...
 
     def prepare_content_length(self, body):
         """Set the Content-Length header based on the body length.
 
         :param body (str | bytes | None): The request body.
         """
-        # TODO: prepare the request authentication
-        # self.auth = ...
         if body:
             self.headers["Content-Length"] = str(len(body))
         else:
@@ -190,7 +186,6 @@ class Request():
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
         # Step 2: Split headers / body
-        # TODO: manage the webapp hook in this mounting point
         self._raw_headers, self._raw_body = self.fetch_headers_body(request)
         self.body = self._raw_body
 
@@ -198,7 +193,6 @@ class Request():
         self.headers = self.prepare_headers(self._raw_headers)
 
         # Step 4: Parse cookies
-        # TODO: implement the cookie function here by parsing the header
         cookie_str = self.headers.get('cookie', '')
         self.prepare_cookies(cookie_str)
 
@@ -207,7 +201,7 @@ class Request():
         self.prepare_auth(auth_header)
 
         # Step 6: Route hook
-        # @bksysnet: Preparing the webapp hook with AsynapRous instance
+        # Preparing the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
         if routes is not None and routes != {}:
             self.routes = routes
