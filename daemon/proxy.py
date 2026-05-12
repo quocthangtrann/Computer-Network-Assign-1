@@ -358,7 +358,7 @@ async def async_proxy_server(ip, port, routes):
     async with server:
         await server.serve_forever()
 
-def run_proxy(ip, port, routes):
+def create_proxy(ip, port, routes):
     global mode_async
     if mode_async == "threading":
         # Baseline multi-thread implementation
@@ -375,14 +375,35 @@ def run_proxy(ip, port, routes):
                 def sync_wrapper(c, a):
                     try:
                         raw = b""
-                        # Read request with basic buffering
+                        # Read headers first to determine Content-Length
                         while True:
                             chunk = c.recv(4096)
                             if not chunk: break
                             raw += chunk
                             if b"\r\n\r\n" in raw: break
                         
-                        request_text = raw.decode("utf-8", errors="replace")
+                        if b"\r\n\r\n" in raw:
+                            header_end = raw.find(b"\r\n\r\n")
+                            header_bytes = raw[:header_end]
+                            body_received = len(raw) - header_end - 4
+                            
+                            content_length = 0
+                            for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                                if line.lower().startswith("content-length:"):
+                                    try:
+                                        content_length = int(line.split(":", 1)[1].strip())
+                                    except ValueError:
+                                        pass
+                                    break
+                            
+                            # Read remaining body if any
+                            while body_received < content_length:
+                                chunk = c.recv(min(4096, content_length - body_received))
+                                if not chunk: break
+                                raw += chunk
+                                body_received += len(chunk)
+
+                        request_text = raw[:raw.find(b"\r\n\r\n")].decode("utf-8", errors="replace") if b"\r\n\r\n" in raw else ""
                         # Simple extraction
                         hostname = ""
                         for line in request_text.splitlines():
@@ -392,7 +413,7 @@ def run_proxy(ip, port, routes):
                         
                         resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
                         if resolved_host:
-                            # Forward synchronously
+                            # Forward raw bytes synchronously
                             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                             backend.connect((resolved_host, int(resolved_port)))
                             backend.sendall(raw)

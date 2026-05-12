@@ -192,16 +192,44 @@ def run_backend(ip, port, routes):
                                     if body_received >= content_length:
                                         sel.unregister(conn)
                                         daemon = HttpAdapter(_ip, _port, conn, addr, _routes)
-                                        msg = raw.decode("utf-8", errors="replace")
-                                        daemon.request.prepare(msg, routes=daemon.routes)
-                                        response = b""
+                                        
+                                        # Use the new bytes-based prepare method
+                                        daemon.request.prepare(raw, routes=daemon.routes)
+                                        
+                                        response_bytes = b""
                                         if daemon.request.hook:
-                                            # Execute hook using the dedicated handler loop
-                                            # still technically "blocks" this iteration, but 
-                                            # it is the standard way to bridge sync/async in callbacks
-                                            # without a full async rewrite.
-                                            response = handler_loop.run_until_complete(daemon.request.hook(daemon.request.headers, daemon.request.body))
-                                        sel.register(conn, selectors.EVENT_WRITE, data=("write", response))
+                                            if inspect.iscoroutinefunction(daemon.request.hook):
+                                                response_bytes = handler_loop.run_until_complete(daemon.request.hook(daemon.request.headers, daemon.request.body))
+                                            else:
+                                                response_bytes = daemon.request.hook(daemon.request.headers, daemon.request.body)
+                                            
+                                            # Normalize to bytes and wrap in HTTP response if needed
+                                            if isinstance(response_bytes, str):
+                                                response_bytes = response_bytes.encode("utf-8")
+                                            
+                                            # Extract sentinel keys and build proper JSON response
+                                            try:
+                                                import json
+                                                payload = json.loads(response_bytes.decode("utf-8"))
+                                            except Exception:
+                                                payload = {}
+                                            
+                                            http_status = payload.pop("__status__", 200)
+                                            set_cookie = payload.pop("__set_cookie__", None)
+                                            extra_headers = {}
+                                            if set_cookie:
+                                                extra_headers["Set-Cookie"] = set_cookie
+                                            
+                                            if http_status == 401:
+                                                response_bytes = daemon.response.build_unauthorized(extra_headers=extra_headers)
+                                            else:
+                                                clean_result = json.dumps(payload).encode("utf-8") if payload else response_bytes
+                                                response_bytes = daemon.response.build_json_response(clean_result, status=http_status, extra_headers=extra_headers)
+                                        else:
+                                            # Static file or 404
+                                            response_bytes = daemon.response.build_response(daemon.request)
+                                            
+                                        sel.register(conn, selectors.EVENT_WRITE, data=("write", response_bytes))
                             else:
                                 sel.unregister(conn)
                                 conn.close()

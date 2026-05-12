@@ -286,11 +286,9 @@ class Response:
         header_lines = ["HTTP/1.1 {} {}".format(self.status_code, reason)]
         for key, value in headers.items():
             header_lines.append("{}: {}".format(key, value))
-        # Blank line signals end of headers
-        header_lines.append("")
-        header_lines.append("")
-
-        fmt_header = "\r\n".join(header_lines)
+        
+        # Join lines with \r\n and add a final blank line to separate headers from body
+        fmt_header = "\r\n".join(header_lines) + "\r\n\r\n"
         return fmt_header.encode("utf-8")
 
     # 404 builder
@@ -324,9 +322,7 @@ class Response:
         header_lines = ["HTTP/1.1 401 Unauthorized"]
         for key, value in headers.items():
             header_lines.append("{}: {}".format(key, value))
-        header_lines.append("")
-        header_lines.append("")
-        header = "\r\n".join(header_lines)
+        header = "\r\n".join(header_lines) + "\r\n\r\n"
         return header.encode("utf-8") + body
 
     # JSON response builder (for REST API routes)
@@ -363,9 +359,7 @@ class Response:
         header_lines = ["HTTP/1.1 {} {}".format(status, reason)]
         for k, v in headers.items():
             header_lines.append("{}: {}".format(k, v))
-        header_lines.append("")
-        header_lines.append("")
-        header_str = "\r\n".join(header_lines)
+        header_str = "\r\n".join(header_lines) + "\r\n\r\n"
 
         return header_str.encode("utf-8") + self._content
 

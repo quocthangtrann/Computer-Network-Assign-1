@@ -112,12 +112,12 @@ class Request():
 
         return method, path, version
 
-    def fetch_headers_body(self, request):
-        # Split at the first blank line
-        parts = request.split("\r\n\r\n", 1)
+    def fetch_headers_body(self, request_bytes):
+        # Split at the first blank line (using bytes)
+        parts = request_bytes.split(b"\r\n\r\n", 1)
 
-        _headers = parts[0]
-        _body = parts[1] if len(parts) > 1 else ""
+        _headers = parts[0].decode("utf-8", errors="replace")
+        _body = parts[1] if len(parts) > 1 else b""
         return _headers, _body
 
     def prepare_headers(self, raw_header_section):
@@ -158,7 +158,7 @@ class Request():
     def prepare_body(self, data, files=None, json=None):
         """Store the request body and update Content-Length.
 
-        :param data: Raw body string or bytes.
+        :param data: Raw body bytes.
         :param files: (unused stub — for API compatibility).
         :param json: (unused stub — for API compatibility).
         """
@@ -168,7 +168,7 @@ class Request():
     def prepare_content_length(self, body):
         """Set the Content-Length header based on the body length.
 
-        :param body (str | bytes | None): The request body.
+        :param body (bytes | None): The request body.
         """
         if body:
             self.headers["Content-Length"] = str(len(body))
@@ -176,21 +176,24 @@ class Request():
             self.headers["Content-Length"] = "0"
 
     # Main entry point
-    def prepare(self, request, routes=None):
-        # Parse a raw HTTP request string and populate all attributes.
+    def prepare(self, request_bytes, routes=None):
+        # Parse a raw HTTP request bytes and populate all attributes.
 
-        # Step 1: Request line
-        print("[Request] prepare request missg {}".format(request))
-        self.method, self.path, self.version = self.extract_request_line(request)
+        if not isinstance(request_bytes, bytes):
+            request_bytes = request_bytes.encode("utf-8", errors="replace")
+
+        # Step 1: Split headers / body (bytes)
+        self._raw_headers_text, self._raw_body = self.fetch_headers_body(request_bytes)
+        self.body = self._raw_body
+
+        # Step 2: Request line
+        print("[Request] prepare request headers section {}".format(self._raw_headers_text))
+        self.method, self.path, self.version = self.extract_request_line(self._raw_headers_text)
         self.url = self.path   # keep url as alias so both attributes work
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
-        # Step 2: Split headers / body
-        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
-        self.body = self._raw_body
-
         # Step 3: Parse headers
-        self.headers = self.prepare_headers(self._raw_headers)
+        self.headers = self.prepare_headers(self._raw_headers_text)
 
         # Step 4: Parse cookies
         cookie_str = self.headers.get('cookie', '')
@@ -207,7 +210,6 @@ class Request():
             self.routes = routes
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
-            print("[Request] Hook has request {}".format(request))
             if self.hook:
                 print("[SampleApp] hook in route-path METHOD {} PATH [{}]".format(
                     self.path, self.method))

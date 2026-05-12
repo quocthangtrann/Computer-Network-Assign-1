@@ -768,7 +768,7 @@ def logout(headers, body):
             username = sessions.pop(token, None)
 
         if not username:
-            username = validate_basic_auth(req)
+            username = validate_basic_auth(headers)
 
         removed_presence = mark_user_offline(username)
 
@@ -819,7 +819,7 @@ def hello(headers, body):
 
 
 @app.route("/echo", methods=["POST"])
-def echo(req):
+def echo(headers, body):
     """Echo the request body back as JSON (development/testing helper).
 
     :param headers: HTTP headers.
@@ -830,7 +830,7 @@ def echo(req):
     try:
         message = json.loads(body)
         data = {"status": "ok", "received": message}
-    except json.JSONDecodeError:
+    except Exception:
         data = {"status": "error", "error": "Invalid JSON"}
     return json.dumps(data).encode("utf-8")
 
@@ -848,7 +848,7 @@ def client_info(headers, body):
 
 
 @app.route("/local-info", methods=["POST", "GET"])
-def local_info(req):
+def local_info(headers, body):
     try:
         data = json.loads(body) if body else {}
     except Exception:
@@ -1927,6 +1927,10 @@ def receive_message(headers, body):
     :param body: JSON message payload from direct, channel, or backup delivery.
     :returns: JSON ACK; duplicate IDs return a successful duplicate ACK.
     """
+    # Security: Verify the sender is an authenticated peer
+    # (Note: In a real P2P system, we'd also check signatures/keys)
+    if not require_auth(headers):
+        return unauthorized_result()
 
     print("[SampleApp] receive_message body={}".format(body))
     try:

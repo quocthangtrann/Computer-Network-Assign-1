@@ -194,13 +194,16 @@ class HttpAdapter:
             print("[HttpAdapter] Dispatching hook {} {}".format(req.method, req.path))
             try:
                 if inspect.iscoroutinefunction(req.hook):
-                    # Use a persistent loop or run_until_complete on a temporary one
-                    # To satisfy the "performance" requirement, we'd ideally use one loop.
-                    # For now, let's just make it slightly cleaner.
-                    global _adapter_loop
-                    if _adapter_loop is None or _adapter_loop.is_closed():
-                        _adapter_loop = asyncio.new_event_loop()
-                    result = _adapter_loop.run_until_complete(req.hook(req.headers, req.body))
+                    # Execute async hook in a thread-safe way
+                    try:
+                        result = asyncio.run(req.hook(req.headers, req.body))
+                    except RuntimeError:
+                        # Fallback for nested loops (though unlikely in this architecture)
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            result = new_loop.run_until_complete(req.hook(req.headers, req.body))
+                        finally:
+                            new_loop.close()
                 else:
                     result = req.hook(req.headers, req.body)
             except Exception as e:
