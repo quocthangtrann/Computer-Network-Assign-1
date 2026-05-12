@@ -171,10 +171,8 @@ class Response:
             elif sub_type == "plain":
                 base_dir = BASE_DIR + "static/"
             elif sub_type == "csv":
-                # TODO: process text/csv
                 base_dir = BASE_DIR + "static/"
             elif sub_type == "xml":
-                # TODO: process text/xml
                 base_dir = BASE_DIR + "static/"
             else:
                 # Fallback for any other text subtype
@@ -192,11 +190,9 @@ class Response:
                 base_dir = BASE_DIR + "apps/"
                 self.headers["Content-Type"] = "application/json"
             elif sub_type == "xml":
-                # TODO: process application/xml
                 base_dir = BASE_DIR + "static/"
                 self.headers["Content-Type"] = "application/xml"
             elif sub_type == "zip":
-                # TODO: process application/zip
                 base_dir = BASE_DIR + "static/"
                 self.headers["Content-Type"] = "application/zip"
             else:
@@ -204,12 +200,10 @@ class Response:
                 self.headers["Content-Type"] = "application/{}".format(sub_type)
 
         elif main_type == "video":
-            # TODO: process video/mp4, video/mpeg, etc.
             base_dir = BASE_DIR + "static/video/"
             self.headers["Content-Type"] = "video/{}".format(sub_type)
 
         elif main_type == "audio":
-            # TODO: process audio types
             base_dir = BASE_DIR + "static/audio/"
             self.headers["Content-Type"] = "audio/{}".format(sub_type)
 
@@ -228,7 +222,6 @@ class Response:
         filepath = os.path.join(base_dir, path.lstrip("/"))
         print("[Response] Serving the object at location {}".format(filepath))
 
-        # TODO: implement the step of fetch the object file
         #       store in the return value of content
         try:
             with open(filepath, "rb") as f:
@@ -254,8 +247,6 @@ class Response:
         """
         reqhdr = request.headers if request.headers else {}
 
-        # TODO: prepare the request authentication
-        # self.auth = ...
 
         # Build the header dict from known fields
         headers = {
@@ -291,16 +282,13 @@ class Response:
         }
         reason = status_reasons.get(self.status_code, "OK")
 
-        # TODO: implement the header building to create formatted header from the provided headers
         # Assemble all lines
         header_lines = ["HTTP/1.1 {} {}".format(self.status_code, reason)]
         for key, value in headers.items():
             header_lines.append("{}: {}".format(key, value))
-        # Blank line signals end of headers
-        header_lines.append("")
-        header_lines.append("")
-
-        fmt_header = "\r\n".join(header_lines)
+        
+        # Join lines with \r\n and add a final blank line to separate headers from body
+        fmt_header = "\r\n".join(header_lines) + "\r\n\r\n"
         return fmt_header.encode("utf-8")
 
     # 404 builder
@@ -334,9 +322,7 @@ class Response:
         header_lines = ["HTTP/1.1 401 Unauthorized"]
         for key, value in headers.items():
             header_lines.append("{}: {}".format(key, value))
-        header_lines.append("")
-        header_lines.append("")
-        header = "\r\n".join(header_lines)
+        header = "\r\n".join(header_lines) + "\r\n\r\n"
         return header.encode("utf-8") + body
 
     # JSON response builder (for REST API routes)
@@ -373,9 +359,7 @@ class Response:
         header_lines = ["HTTP/1.1 {} {}".format(status, reason)]
         for k, v in headers.items():
             header_lines.append("{}: {}".format(k, v))
-        header_lines.append("")
-        header_lines.append("")
-        header_str = "\r\n".join(header_lines)
+        header_str = "\r\n".join(header_lines) + "\r\n\r\n"
 
         return header_str.encode("utf-8") + self._content
 
@@ -414,7 +398,6 @@ class Response:
             self.headers["Content-Type"] = "application/json"
             body = envelop_content if envelop_content else b""
             return self.build_json_response(body)
-        # TODO: add support for other object types (video, audio, xml, zip, …)
         else:
             return self.build_notfound()
 

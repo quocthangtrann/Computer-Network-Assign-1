@@ -99,24 +99,14 @@ def parse_virtual_hosts(config_file):
         policy_match = re.search(r'dist_policy\s+(\w+)', block)
         if policy_match:
             dist_policy_map = policy_match.group(1)
-        else: #default policy is round_robin
-            dist_policy_map = 'round-robin'
-            
-        #
-        # @bksysnet: Build the mapping and policy
-        # TODO: this policy varies among scenarios 
-        #       the default policy is provided with one proxy_pass
-        #       In the multi alternatives of proxy_pass then
-        #       the policy is applied to identify the highes matching
-        #       proxy_pass
-        #
-        if len(proxy_map.get(host,[])) == 1:
-            routes[host] = (proxy_map.get(host,[])[0], dist_policy_map)
-        # esle if:
-        #         TODO:  apply further policy matching here
-        #
         else:
-            routes[host] = (proxy_map.get(host,[]), dist_policy_map)
+            dist_policy_map = 'round-robin'
+
+        # Build the mapping and policy
+        if len(proxy_map.get(host, [])) == 1:
+            routes[host] = (proxy_map.get(host, [])[0], dist_policy_map)
+        else:
+            routes[host] = (proxy_map.get(host, []), dist_policy_map)
 
     for key, value in routes.items():
         print(key, value)
@@ -138,11 +128,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='Proxy', description='', epilog='Proxy daemon')
     parser.add_argument('--server-ip', default='0.0.0.0')
     parser.add_argument('--server-port', type=int, default=PROXY_PORT)
+    parser.add_argument('--mode', type=str, default='coroutine', choices=['coroutine', 'threading'])
  
     args = parser.parse_args()
     ip = args.server_ip
     port = args.server_port
+    mode = args.mode
 
     routes = parse_virtual_hosts("config/proxy.conf")
 
+    import daemon.proxy
+    daemon.proxy.mode_async = mode
     create_proxy(ip, port, routes)

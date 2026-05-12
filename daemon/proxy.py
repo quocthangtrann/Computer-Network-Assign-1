@@ -37,6 +37,7 @@ Requirements:
 """
 
 import socket
+import asyncio
 import threading
 from .response import *
 from .httpadapter import HttpAdapter
@@ -50,6 +51,8 @@ PROXY_PASS = {
 }
 
 round_robin_counter = {}
+mode_async = "coroutine"
+proxy_lock = threading.Lock()
 
 
 def receive_http_request(conn):
@@ -211,7 +214,6 @@ def resolve_routing_policy(hostname, routes):
 
     if isinstance(proxy_map, list):
         if len(proxy_map) == 0:
-            # TODO: implement error handling for non-mapped host.
             #       The policy is designed by team, but it can be a basic
             #       default host in your self-defined system.
             print("[Proxy] Empty resolved routing of hostname {}".format(hostname))
@@ -224,13 +226,14 @@ def resolve_routing_policy(hostname, routes):
         else:
             # Multiple backends — round-robin (extension point)
             # Implement actual Round-Robin Load Balancing
-            if hostname not in round_robin_counter:
-                round_robin_counter[hostname] = 0
+            with proxy_lock:
+                if hostname not in round_robin_counter:
+                    round_robin_counter[hostname] = 0
 
-            index = round_robin_counter[hostname] % len(proxy_map)
-            proxy_host, proxy_port = proxy_map[index].split(":", 1)
+                index = round_robin_counter[hostname] % len(proxy_map)
+                proxy_host, proxy_port = proxy_map[index].split(":", 1)
 
-            round_robin_counter[hostname] += 1
+                round_robin_counter[hostname] += 1
     else:
         # Single string "host:port"
         print(
@@ -241,16 +244,35 @@ def resolve_routing_policy(hostname, routes):
     return proxy_host, proxy_port
 
 
-def handle_client(ip, port, conn, addr, routes):
-    # Handle a single proxied client connection.
+
+async def handle_client_coroutine(reader, writer, routes, client_ip):
     try:
-        request = receive_http_request(conn)
+        raw = b""
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk:
+                break
+            raw += chunk
+            if b"\r\n\r\n" in raw:
+                header_end = raw.find(b"\r\n\r\n")
+                header_bytes = raw[:header_end]
+                body_received = len(raw) - header_end - 4
+                content_length = 0
+                for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                    if line.lower().startswith("content-length:"):
+                        try:
+                            content_length = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+                        break
+                if body_received >= content_length:
+                    break
+        request = raw.decode("utf-8", errors="replace")
     except Exception as e:
         print("[Proxy] recv error: {}".format(e))
-        conn.close()
+        writer.close()
         return
 
-    # Extract Host header (required by HTTP/1.1, RFC 7230 §5.4)
     hostname = ""
     for line in request.splitlines():
         if line.lower().startswith("host:"):
@@ -258,30 +280,20 @@ def handle_client(ip, port, conn, addr, routes):
             break
 
     if not hostname:
-        print("[Proxy] No Host header found from {}".format(addr))
-        conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
-        conn.close()
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
         return
-
-    print("[Proxy] {} at Host: {}".format(addr, hostname))
 
     request_path = extract_request_path(request)
     path_route = resolve_path_route(request_path, routes)
-    request = upsert_forwarded_headers(request, addr[0])
+    request = upsert_forwarded_headers(request, client_ip)
 
     if path_route:
         resolved_host, resolved_port = parse_target(path_route["target"])
         if path_route.get("strip_prefix"):
             rewritten_path = strip_prefix(request_path, path_route["prefix"])
             request = rewrite_request_path(request, rewritten_path)
-        print(
-            "[Proxy] Path {} -> {}:{} as {}".format(
-                request_path,
-                resolved_host,
-                resolved_port,
-                extract_request_path(request),
-            )
-        )
     else:
         if hostname in routes:
             resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
@@ -289,70 +301,141 @@ def handle_client(ip, port, conn, addr, routes):
             default_result, _ = resolve_default_route(routes)
             if default_result:
                 resolved_host, resolved_port = default_result
-                print(
-                    "[Proxy] Default route {} -> {}:{}".format(
-                        request_path, resolved_host, resolved_port
-                    )
-                )
             else:
-                # Resolve backend destination by Host header for legacy virtual host config.
                 resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
         try:
             resolved_port = int(resolved_port)
         except ValueError:
-            print("[Proxy] Invalid port value '{}'".format(resolved_port))
             resolved_port = 9000
 
     if resolved_host:
-        print(
-            "[Proxy] Forwarding {} → {}:{}".format(
-                hostname, resolved_host, resolved_port
-            )
-        )
-        response = forward_request(resolved_host, resolved_port, request)
+        try:
+            # Forward the request asynchronously
+            backend_reader, backend_writer = await asyncio.open_connection(resolved_host, resolved_port)
+            backend_writer.write(request.encode("utf-8"))
+            await backend_writer.drain()
+            
+            while True:
+                resp_chunk = await backend_reader.read(4096)
+                if not resp_chunk:
+                    break
+                writer.write(resp_chunk)
+                await writer.drain()
+                
+            backend_writer.close()
+            await backend_writer.wait_closed()
+        except Exception as e:
+            print("[Proxy] Connection error to backend {}:{} - {}".format(resolved_host, resolved_port, e))
+            err_resp = (
+                "HTTP/1.1 502 Bad Gateway\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 15\r\n"
+                "Connection: close\r\n\r\n502 Bad Gateway"
+            ).encode("utf-8")
+            writer.write(err_resp)
+            await writer.drain()
     else:
-        response = (
+        not_found = (
             "HTTP/1.1 404 Not Found\r\n"
             "Content-Type: text/plain\r\n"
             "Content-Length: 13\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "404 Not Found"
+            "Connection: close\r\n\r\n404 Not Found"
         ).encode("utf-8")
+        writer.write(not_found)
+        await writer.drain()
 
-    conn.sendall(response)
-    conn.close()
+    writer.close()
+    await writer.wait_closed()
 
+async def async_proxy_server(ip, port, routes):
+    async def handle_client_wrapper(reader, writer):
+        addr = writer.get_extra_info('peername')
+        client_ip = addr[0] if addr else "127.0.0.1"
+        await handle_client_coroutine(reader, writer, routes, client_ip)
 
-def run_proxy(ip, port, routes):
-    # Start the proxy server and accept connections with one thread per client.
-    proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Allow rapid restart without "Address already in use" errors
-    proxy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-    try:
-        proxy.bind((ip, port))
-        proxy.listen(50)
-        print("[Proxy] Listening on IP {} port {}".format(ip, port))
-
-        while True:
-            conn, addr = proxy.accept()
-
-            # TODO: implement the step of the client incoming connection
-            #       using multi-thread programming with the provided handle_client routine
-            # Spawn a daemon thread so the accept() loop is never blocked
-            t = threading.Thread(
-                target=handle_client, args=(ip, port, conn, addr, routes)
-            )
-            t.daemon = True  # thread exits when the main process exits
-            t.start()
-
-    except socket.error as e:
-        print("[Proxy] Socket error: {}".format(e))
-    finally:
-        proxy.close()
-
+    server = await asyncio.start_server(handle_client_wrapper, ip, port)
+    print("[Proxy] Listening on IP {} port {} (asyncio)".format(ip, port))
+    async with server:
+        await server.serve_forever()
 
 def create_proxy(ip, port, routes):
+    global mode_async
+    if mode_async == "threading":
+        # Baseline multi-thread implementation
+        proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        proxy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            proxy_socket.bind((ip, port))
+            proxy_socket.listen(50)
+            print("[Proxy] Listening on IP {} port {} (threading)".format(ip, port))
+            while True:
+                conn, addr = proxy_socket.accept()
+                # Use a wrapper for handle_client to handle it in sync
 
-    run_proxy(ip, port, routes)
+                def sync_wrapper(c, a):
+                    try:
+                        raw = b""
+                        # Read headers first to determine Content-Length
+                        while True:
+                            chunk = c.recv(4096)
+                            if not chunk: break
+                            raw += chunk
+                            if b"\r\n\r\n" in raw: break
+                        
+                        if b"\r\n\r\n" in raw:
+                            header_end = raw.find(b"\r\n\r\n")
+                            header_bytes = raw[:header_end]
+                            body_received = len(raw) - header_end - 4
+                            
+                            content_length = 0
+                            for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                                if line.lower().startswith("content-length:"):
+                                    try:
+                                        content_length = int(line.split(":", 1)[1].strip())
+                                    except ValueError:
+                                        pass
+                                    break
+                            
+                            # Read remaining body if any
+                            while body_received < content_length:
+                                chunk = c.recv(min(4096, content_length - body_received))
+                                if not chunk: break
+                                raw += chunk
+                                body_received += len(chunk)
+
+                        request_text = raw[:raw.find(b"\r\n\r\n")].decode("utf-8", errors="replace") if b"\r\n\r\n" in raw else ""
+                        # Simple extraction
+                        hostname = ""
+                        for line in request_text.splitlines():
+                            if line.lower().startswith("host:"):
+                                hostname = line.split(":", 1)[1].strip()
+                                break
+                        
+                        resolved_host, resolved_port = resolve_routing_policy(hostname, routes)
+                        if resolved_host:
+                            # Forward raw bytes synchronously
+                            backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            backend.connect((resolved_host, int(resolved_port)))
+                            backend.sendall(raw)
+                            while True:
+                                resp_chunk = backend.recv(4096)
+                                if not resp_chunk: break
+                                c.sendall(resp_chunk)
+                            backend.close()
+                    except Exception as e:
+                        print("[Proxy] Threading error: {}".format(e))
+                    finally:
+                        c.close()
+
+                
+                t = threading.Thread(target=sync_wrapper, args=(conn, addr))
+                t.daemon = True
+                t.start()
+        except Exception as e:
+            print("[Proxy] Socket error: {}".format(e))
+        finally:
+            proxy_socket.close()
+        return
+
+    # Default: coroutine mode
+    asyncio.run(async_proxy_server(ip, port, routes))

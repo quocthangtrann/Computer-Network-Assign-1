@@ -344,7 +344,6 @@ Three response builders were implemented:
   `static/images/` for images), reads the file, and assembles the HTTP envelope.
 
 **Key decision on MIME types:** We added handling for video/_, audio/_, application/xml,
-application/zip, text/csv, and text/xml to satisfy the TODO items in the original code.
 
 ---
 

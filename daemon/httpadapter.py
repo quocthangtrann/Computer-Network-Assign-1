@@ -34,6 +34,7 @@ from .response import Response
 from .dictionary import CaseInsensitiveDict
 
 import asyncio
+_adapter_loop = None
 import inspect
 import json
 
@@ -124,7 +125,6 @@ class HttpAdapter:
         
 
         # -- Read raw request bytes from the socket -----------------------
-        # TODO: handle for App hook here — read request and dispatch
         try:
             raw = b""
             while True:
@@ -190,19 +190,20 @@ class HttpAdapter:
         extra_headers = dict(cors_headers)   # start with CORS headers in every response
 
         if req.hook:
-            # TODO: handle for App hook here
             # A matching route handler was found: call it with (headers, body)
             print("[HttpAdapter] Dispatching hook {} {}".format(req.method, req.path))
             try:
                 if inspect.iscoroutinefunction(req.hook):
-                    # Create a fresh event loop so we never depend on the default one.
-                    _loop = asyncio.new_event_loop()
+                    # Execute async hook in a thread-safe way
                     try:
-                        result = _loop.run_until_complete(
-                            req.hook(req.headers, req.body)
-                        )
-                    finally:
-                        _loop.close()
+                        result = asyncio.run(req.hook(req.headers, req.body))
+                    except RuntimeError:
+                        # Fallback for nested loops (though unlikely in this architecture)
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            result = new_loop.run_until_complete(req.hook(req.headers, req.body))
+                        finally:
+                            new_loop.close()
                 else:
                     result = req.hook(req.headers, req.body)
             except Exception as e:
@@ -269,11 +270,29 @@ class HttpAdapter:
         addr = writer.get_extra_info("peername")
         print("[HttpAdapter] Invoke handle_client_coroutine connection {})".format(addr))
 
-        # TODO: Handle the request asynchronously
         # Read raw bytes from the async stream
         try:
-            msg_bytes = await reader.read(4096)
-            msg = msg_bytes.decode("utf-8", errors='replace')
+            raw = b""
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                raw += chunk
+                if b"\r\n\r\n" in raw:
+                    header_end = raw.find(b"\r\n\r\n")
+                    header_bytes = raw[:header_end]
+                    body_received = len(raw) - header_end - 4
+                    content_length = 0
+                    for line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                        if line.lower().startswith("content-length:"):
+                            try:
+                                content_length = int(line.split(":", 1)[1].strip())
+                            except ValueError:
+                                pass
+                            break
+                    if body_received >= content_length:
+                        break
+            msg = raw.decode("utf-8", errors="replace")
         except Exception as e:
             print("[HttpAdapter] async recv error: {}".format(e))
             writer.close()
@@ -282,10 +301,38 @@ class HttpAdapter:
         # Re-use the same route dict that was passed during construction
         req.prepare(msg, routes=self.routes)
 
+        origin = req.headers.get('origin', '*')
+        cors_headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+
+        # -- Handle OPTIONS preflight (CORS pre-flight request from browser) --
+        if req.method == "OPTIONS":
+            preflight = (
+                "HTTP/1.1 200 OK\r\n"
+                "Access-Control-Allow-Origin: {}\r\n".format(origin) +
+                "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+                "Access-Control-Allow-Headers: Content-Type, Authorization, Cookie\r\n"
+                "Access-Control-Allow-Credentials: true\r\n"
+                "Vary: Origin\r\n"
+                "Access-Control-Max-Age: 86400\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            writer.write(preflight.encode('utf-8'))
+            await writer.drain()
+            writer.close()
+            return
+
         response_bytes = b""
+        extra_headers = dict(cors_headers)   # start with CORS headers in every response
 
         if req.hook:
-            # TODO: handle for App hook here (async version)
             print("[HttpAdapter] Async dispatching hook {} {}".format(req.method, req.path))
             try:
                 if inspect.iscoroutinefunction(req.hook):
@@ -296,14 +343,33 @@ class HttpAdapter:
                 print("[HttpAdapter] Async handler error: {}".format(e))
                 result = json.dumps({"error": str(e)}).encode("utf-8")
 
-            if isinstance(result, dict) and result.get("__status__") == 401:
-                response_bytes = resp.build_unauthorized()
+            if isinstance(result, str):
+                result = result.encode("utf-8")
+            elif not isinstance(result, bytes):
+                result = json.dumps(result).encode("utf-8")
+
+            # Add any additional headers defined by subclass
+            custom_headers = self.add_headers(req) or {}
+            extra_headers.update(custom_headers)
+
+            try:
+                payload = json.loads(result.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            http_status = payload.pop("__status__", 200)
+            set_cookie  = payload.pop("__set_cookie__", None)
+
+            if set_cookie:
+                extra_headers["Set-Cookie"] = set_cookie
+
+            if http_status == 401:
+                response_bytes = resp.build_unauthorized(extra_headers=extra_headers)
             else:
-                if isinstance(result, str):
-                    result = result.encode("utf-8")
-                elif not isinstance(result, bytes):
-                    result = json.dumps(result).encode("utf-8")
-                response_bytes = resp.build_json_response(result)
+                clean_result = json.dumps(payload).encode("utf-8") if payload else result
+                response_bytes = resp.build_json_response(
+                    clean_result, status=http_status, extra_headers=extra_headers
+                )
         else:
             # Build static file response
             response_bytes = resp.build_response(req)
@@ -366,7 +432,6 @@ class HttpAdapter:
         """
         headers = {}
 
-        # TODO: build your authentication here
         #       username, password = load_from_config(...)
         # We provide dummy auth here as a placeholder
         username, password = ("user1", "password")

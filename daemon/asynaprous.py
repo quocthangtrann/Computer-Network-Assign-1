@@ -76,13 +76,6 @@ class AsynapRous:
         :rtype: function - A decorator that registers the handler function.
         """
         def decorator(func):
-            for method in methods:
-                self.routes[(method.upper(), path)] = func
-
-            # Optional attach route metadata to the function
-            func._route_path = path
-            func._route_methods = methods
-
             def sync_wrapper(*args, **kwargs):
                print("[AsynapRous] running sync function...  [{}] {}".format(methods, path))
                result = func(*args, **kwargs)
@@ -93,10 +86,16 @@ class AsynapRous:
                result = await func(*args, **kwargs)
                return result
 
-            if inspect.iscoroutinefunction(func):
-               return async_wrapper
-            else:
-               return sync_wrapper
+            wrapper = async_wrapper if inspect.iscoroutinefunction(func) else sync_wrapper
+            
+            for method in methods:
+                self.routes[(method.upper(), path)] = wrapper
+
+            # Optional attach route metadata to the function
+            func._route_path = path
+            func._route_methods = methods
+
+            return wrapper
         return decorator
 
     def run(self):
